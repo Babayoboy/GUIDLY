@@ -134,8 +134,8 @@ export default function Call({ sessionId, peerUserId, name, mode, incoming = fal
           setRelayNotice('Media is routed through the TURN relay for network compatibility.')
           if (!active) { local.getTracks().forEach((track) => track.stop()); return }
         } catch (configError) {
-          const detail = configError.message.includes('TURN is not configured')
-            ? 'Set METERED_DOMAIN, METERED_API_KEY, SUPABASE_URL, and SUPABASE_ANON_KEY in Vercel, then redeploy.'
+          const detail = configError.message.includes('ExpressTURN is not configured')
+            ? 'Set EXPRESSTURN_USERNAME and EXPRESSTURN_PASSWORD, plus Supabase server variables, then restart/redeploy.'
             : configError.message
           setRelayNotice(`TURN relay is unavailable (${detail}). This call may fail on restrictive networks.`)
         }

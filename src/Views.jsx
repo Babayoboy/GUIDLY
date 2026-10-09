@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { useStore, nt } from './store'
 import { matchMentor, EXPERTISE, money, INR_RATE } from './data'
 import { useExperts } from './useExperts'
+import { useSessions, isSessionActive } from './useSessions'
+import { useWallet } from './useWallet'
 import { supabase } from './lib/supabase'
 import { useAuth } from './context/AuthContext'
 
@@ -20,30 +22,48 @@ const uniq = (a) => [...new Set(a)].sort()
 const LABEL = { field: 'Field', college: 'College', degree: 'Degree', career: 'Career', skill: 'Skill' }
 const EMPTY = { field: '', college: '', degree: '', career: '', skill: '', rate: '' }
 const HINTS = ['IIT', 'B.Tech', 'Product Manager', 'Python', 'MBA prep']
-
 export function Mentors({ go, onCall }) {
   const { s, set } = useStore()
   const { experts, loading, error } = useExperts()
+  const { user: authUser } = useAuth()
+  const { sessions: learnerSessions } = useSessions(authUser?.id, 'learner')
   const [q, setQ] = useState('')
   const [f, setF] = useState(EMPTY)
   const [show, setShow] = useState(false)
   const [msg, setMsg] = useState(null)
+  const [subscriptions, setSubscriptions] = useState([])
   const cur = s.currency || 'INR'
+  useEffect(() => {
+    if (!authUser?.id || !supabase) return
+    let active = true
+    supabase.from('saved_experts').select('expert_id').eq('learner_id', authUser.id).then(({ data, error: queryError }) => {
+      if (!active) return
+      if (!queryError) setSubscriptions((data || []).map((row) => row.expert_id))
+    })
+    return () => { active = false }
+  }, [authUser?.id])
   const options = { field: uniq(experts.map((m) => m.field).filter(Boolean)), college: uniq(experts.map((m) => m.college).filter(Boolean)), degree: uniq(experts.map((m) => m.degree).filter(Boolean)), career: uniq(experts.flatMap((m) => m.careers)), skill: uniq(experts.flatMap((m) => m.skills)) }
   const n = Object.values(f).filter(Boolean).length
   const list = experts.filter((m) => matchMentor(m, q) && (!f.field || m.field === f.field) && (!f.college || m.college === f.college) && (!f.degree || m.degree === f.degree)
     && (!f.career || m.careers.includes(f.career)) && (!f.skill || m.skills.includes(f.skill)) && (!f.rate || m.rate <= +f.rate))
-  const book = (m) => {
-    if (s.wallet.student < m.rate) return setMsg({ bad: true, text: `Not enough balance to book ${m.name} (${money(m.rate, cur)}). Add funds in Wallet.` })
-    set((p) => ({
-      wallet: { student: p.wallet.student - m.rate, mentor: p.wallet.mentor + m.rate },
-      sessions: [...p.sessions, { id: Date.now(), mentor: m.name, rate: m.rate, when: 'To be scheduled' }],
-      tx: [{ id: Date.now(), text: `Session with ${m.name}`, amt: -m.rate }, ...p.tx],
-      ...nt(p, 'sessions', `Session booked with ${m.name}.`),
-    }))
-    setMsg({ text: `Session booked with ${m.name}.` })
+  const activeSessionsByExpert = new Map(learnerSessions.filter(isSessionActive).map((session) => [session.expertId, session]))
+  const book = async (m) => {
+    if (!authUser?.id || !supabase) return setMsg({ bad: true, text: 'Log in to book a session.' })
+    const { error } = await supabase.rpc('book_expert_session', { p_expert_id: m.id })
+    if (error) return setMsg({ bad: true, text: error.message || 'Could not save your booking.' })
+    set((p) => ({ ...nt(p, 'sessions', `Session booked with ${m.name}.`) }))
+    setMsg({ text: `Session request for ${m.name} saved. Payment is simulated in this demo.` })
   }
-  const save = (m) => set((p) => ({ saved: p.saved.includes(m.name) ? p.saved.filter((x) => x !== m.name) : [...p.saved, m.name] }))
+  const save = async (m) => {
+    if (!authUser?.id || !supabase) return setMsg({ bad: true, text: 'Log in to subscribe to an expert.' })
+    const subscribed = subscriptions.includes(m.id)
+    const result = subscribed
+      ? await supabase.from('saved_experts').delete().eq('learner_id', authUser.id).eq('expert_id', m.id)
+      : await supabase.from('saved_experts').insert({ learner_id: authUser.id, expert_id: m.id })
+    if (result.error) return setMsg({ bad: true, text: 'Could not update your subscription. Please try again.' })
+    setSubscriptions((current) => subscribed ? current.filter((id) => id !== m.id) : [...current, m.id])
+    set((p) => ({ saved: subscribed ? p.saved.filter((x) => x !== m.name) : [...new Set([...p.saved, m.name])] }))
+  }
   return (<>
     <Head eyebrow="Find mentor" title="Experts available" em="this week." note="Explore mentor profiles and find guidance for your next step." />
     <div className="search">
@@ -78,10 +98,10 @@ export function Mentors({ go, onCall }) {
           <button className="btn sm fill" onClick={() => book(m)}>Book session</button>
         </div>
         <div className="mtools">
-          <button onClick={() => go('messages', m.name)}><Bubble />Chat</button>
-          <button onClick={() => onCall(m.name, 'voice')}><Phone />Voice</button>
-          <button onClick={() => onCall(m.name, 'video')}><Video />Video</button>
-          <button onClick={() => save(m)}><span className="star">{s.saved.includes(m.name) ? '★' : '☆'}</span>{s.saved.includes(m.name) ? 'Saved' : 'Save'}</button>
+          <button disabled={!activeSessionsByExpert.has(m.id)} title={activeSessionsByExpert.has(m.id) ? 'Chat during your active session' : 'Chat is available during an active session'} onClick={() => go('messages', m.id)}><Bubble />Chat</button>
+          <button disabled={!activeSessionsByExpert.has(m.id)} title={activeSessionsByExpert.has(m.id) ? 'Voice call during your active session' : 'Calls are available during an active session'} onClick={() => onCall({ sessionId: activeSessionsByExpert.get(m.id).id, peerUserId: m.id, name: m.name, mode: 'voice' })}><Phone />Voice</button>
+          <button disabled={!activeSessionsByExpert.has(m.id)} title={activeSessionsByExpert.has(m.id) ? 'Video call during your active session' : 'Calls are available during an active session'} onClick={() => onCall({ sessionId: activeSessionsByExpert.get(m.id).id, peerUserId: m.id, name: m.name, mode: 'video' })}><Video />Video</button>
+          <button onClick={() => save(m)}><span className="star">{subscriptions.includes(m.id) ? '★' : '☆'}</span>{subscriptions.includes(m.id) ? 'Subscribed' : 'Subscribe'}</button>
         </div>
       </div>))}
       {!loading && !error && !list.length && <p className="lead">No experts match. Try fewer keywords or clear the filters.</p>}</div>
@@ -91,6 +111,13 @@ export function Mentors({ go, onCall }) {
 /* ---------- Sessions ---------- */
 export function Sessions({ go }) {
   const { s, set } = useStore()
+  const { user: authUser } = useAuth()
+  const { sessions: storedSessions, loading, error } = useSessions(authUser?.id, s.user.role)
+  const sessions = storedSessions.map((session) => ({
+    ...session,
+    ...(s.sessions.find((localSession) => localSession.id === session.id) || {}),
+  }))
+  const activeExpertByName = new Map(sessions.filter(activeSession).map((session) => [session.mentor, session.expertId]))
   const cur = s.currency || 'INR'
   const [rate, setRate] = useState(null)
   const [stars, setStars] = useState(0)
@@ -103,14 +130,17 @@ export function Sessions({ go }) {
     setRate(null)
   }
   return (<>
-    <Head eyebrow="Sessions" title="Your sessions &" em="saved mentors." />
-    <h3 className="sub">Booked sessions</h3>
-    {!s.sessions.length && <p className="lead">No sessions yet. Book one from Mentors.</p>}
-    {s.sessions.map((x) => (
+    <Head eyebrow="Sessions" title={s.user.role === 'mentor' ? 'Learner bookings &' : 'Your sessions &'} em={s.user.role === 'mentor' ? 'requests.' : 'saved mentors.'} />
+    <h3 className="sub">{s.user.role === 'mentor' ? 'Incoming sessions' : 'Booked sessions'}</h3>
+    {loading && <p className="lead">Loading your sessions…</p>}
+    {error && <p className="err">{error}</p>}
+    {!loading && !error && !sessions.length && <p className="lead">{s.user.role === 'mentor' ? 'No learner bookings yet.' : 'No sessions yet. Book one from Mentors.'}</p>}
+    {sessions.map((x) => (
       <div className="item col" key={x.id}>
         <div className="between"><b>{x.mentor}</b><span>{x.when}</span><span>{money(x.rate, cur)}</span>
           <span className="actions" style={{ margin: 0 }}>
-            <button className="btn sm" onClick={() => go('messages', x.mentor)}>Message</button>
+            <button className="btn sm" onClick={() => go('messages', s.user.role === 'mentor' ? x.learnerId : x.expertId)}>Message</button>
+            {isSessionActive(x) && <><button className="btn sm" onClick={() => onCall({ sessionId: x.id, peerUserId: s.user.role === 'mentor' ? x.learnerId : x.expertId, name: x.mentor, mode: 'voice' })}><Phone /> Voice</button><button className="btn sm" onClick={() => onCall({ sessionId: x.id, peerUserId: s.user.role === 'mentor' ? x.learnerId : x.expertId, name: x.mentor, mode: 'video' })}><Video /> Video</button></>}
             {x.rated ? <span className="ok">★ {x.rated} rated</span> : <button className="btn sm fill" onClick={() => open(x.id)}>Rate</button>}</span></div>
         {rate === x.id && (
           <div className="ratebox">
@@ -122,7 +152,7 @@ export function Sessions({ go }) {
       </div>))}
     <h3 className="sub">Saved mentors</h3>
     {!s.saved.length && <p className="lead">Nothing saved yet.</p>}
-    {s.saved.map((n) => <div className="item" key={n}><b>{n}</b><button className="btn sm" onClick={() => go('messages', n)}>Message</button></div>)}
+    {s.saved.map((n) => <div className="item" key={n}><b>{n}</b><button className="btn sm" disabled={!activeExpertByName.has(n)} onClick={() => go('messages', activeExpertByName.get(n))}>{activeExpertByName.has(n) ? 'Message' : 'No active session'}</button></div>)}
   </>)
 }
 
@@ -156,21 +186,113 @@ function VoiceNote({ m }) {
     </div>)
 }
 
-function Chat({ name, onBack, onCall }) {
+function Chat({ name, otherUserId, sessionId, onBack, onCall }) {
   const { s, set } = useStore()
+  const { user: authUser } = useAuth()
   const role = s.user.role
-  const msgs = s.threads[role][name] || []
+  const [dbMsgs, setDbMsgs] = useState([])
+  const [localMediaMsgs, setLocalMediaMsgs] = useState([])
+  const [conversationId, setConversationId] = useState(null)
   const [text, setText] = useState('')
   const [err, setErr] = useState('')
+  const [chatLoading, setChatLoading] = useState(true)
+  const [sending, setSending] = useState(false)
   const [rec, setRec] = useState(false)
   const [secs, setSecs] = useState(0)
   const [level, setLevel] = useState(0)
   const mr = useRef(null), chunks = useRef([]), samples = useRef([]), tick = useRef(null), ctxRef = useRef(null), cancel = useRef(false), t0 = useRef(0), endRef = useRef(null), fileRef = useRef(null)
-  const push = (m) => set((p) => ({ threads: { ...p.threads, [role]: { ...p.threads[role], [name]: [...(p.threads[role][name] || []), { from: 'me', ...m }] } } }))
+  const msgs = [...dbMsgs, ...localMediaMsgs].sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0))
+  const appendMessage = (message) => {
+    setDbMsgs((current) => {
+      if (current.some((existing) => existing.id === message.id)) return current
+      return [...current, message].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+    })
+  }
+  const push = (m) => {
+    const localMessage = { from: 'me', ...m, created_at: new Date().toISOString() }
+    setLocalMediaMsgs((current) => [...current, localMessage])
+    set((p) => ({ threads: { ...p.threads, [role]: { ...p.threads[role], [name]: [...(p.threads[role][name] || []), localMessage] } } }))
+  }
   const stopAudio = () => { clearInterval(tick.current); ctxRef.current?.close?.(); ctxRef.current = null }
   useEffect(() => { endRef.current?.scrollIntoView({ block: 'end' }) }, [msgs.length])
   useEffect(() => () => { stopAudio(); if (mr.current?.state === 'recording') { cancel.current = true; mr.current.stop() } }, [])
-  const send = (e) => { e.preventDefault(); if (!text.trim()) return; push({ text: text.trim() }); setText('') }
+  useEffect(() => {
+    if (!authUser?.id || !otherUserId || !supabase) {
+      setChatLoading(false)
+      setErr('Could not identify both participants for this conversation.')
+      return
+    }
+    let active = true
+    let channel
+    setChatLoading(true)
+    setErr('')
+    setConversationId(null)
+    setDbMsgs([])
+    setLocalMediaMsgs([])
+    const learnerId = role === 'mentor' ? otherUserId : authUser.id
+    const expertId = role === 'mentor' ? authUser.id : otherUserId
+    const load = async () => {
+      let result = await supabase.from('conversations').select('id')
+        .eq('learner_id', learnerId).eq('expert_id', expertId).maybeSingle()
+      if (result.error) throw result.error
+      if (!result.data) {
+        result = await supabase.from('conversations').insert({ learner_id: learnerId, expert_id: expertId }).select('id').single()
+        if (result.error) throw result.error
+      }
+      const id = result.data.id
+      channel = supabase.channel(`messages-${id}`)
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${id}` }, (payload) => {
+          const message = payload.new
+          appendMessage({
+            id: message.id,
+            from: message.sender_id === authUser.id ? 'me' : 'them',
+            text: message.body,
+            created_at: message.created_at,
+          })
+        })
+      await new Promise((resolve, reject) => {
+        channel.subscribe((status, subscriptionError) => {
+          if (status === 'SUBSCRIBED') resolve()
+          else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+            reject(subscriptionError || new Error(`Realtime subscription ${status.toLowerCase()}`))
+          }
+        })
+      })
+      if (!active) return
+      setConversationId(id)
+      const messageResult = await supabase.from('messages').select('id,sender_id,body,created_at')
+        .eq('conversation_id', id).order('created_at', { ascending: true })
+      if (messageResult.error) throw messageResult.error
+      if (!active) return
+      const history = (messageResult.data || []).map((message) => ({
+        id: message.id,
+        from: message.sender_id === authUser.id ? 'me' : 'them',
+        text: message.body,
+        created_at: message.created_at,
+      }))
+      setDbMsgs((current) => {
+        const messagesById = new Map(history.map((message) => [message.id, message]))
+        current.forEach((message) => messagesById.set(message.id, message))
+        return [...messagesById.values()].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+      })
+    }
+    load().catch((queryError) => {
+      if (active) setErr(`Could not load conversation: ${queryError.message}`)
+    }).finally(() => { if (active) setChatLoading(false) })
+    return () => { active = false; if (channel) supabase.removeChannel(channel) }
+  }, [authUser?.id, otherUserId, role])
+  const send = async (e) => {
+    e.preventDefault()
+    if (!text.trim() || !conversationId || sending) return
+    setSending(true)
+    const { data, error: sendError } = await supabase.from('messages')
+      .insert({ conversation_id: conversationId, sender_id: authUser.id, body: text.trim() })
+      .select('id,sender_id,body,created_at').single()
+    setSending(false)
+    if (sendError) { setErr(`Message not sent: ${sendError.message}`); return }
+    appendMessage({ id: data.id, from: 'me', text: data.body, created_at: data.created_at })
+    setText('')
+  }
   const attach = async (e) => {
     const f = e.target.files[0]; e.target.value = ''; if (!f) return
     setErr('')
@@ -213,11 +335,12 @@ function Chat({ name, onBack, onCall }) {
       <div className="chathead">
         <button className="btn sm icon backbtn" onClick={onBack} aria-label="Back to conversations">←</button>
         <div className="avatar sm">{ini(name)}</div><b>{name}</b><span className="grow" />
-        <button className="btn sm" onClick={() => onCall(name, 'voice')} title="Voice call"><Phone /> Voice</button>
-        <button className="btn sm" onClick={() => onCall(name, 'video')} title="Video call"><Video /> Video</button>
+        <button className="btn sm" onClick={() => onCall({ sessionId, peerUserId: otherUserId, name, mode: 'voice' })} title="Voice call during this session"><Phone /> Voice</button>
+        <button className="btn sm" onClick={() => onCall({ sessionId, peerUserId: otherUserId, name, mode: 'video' })} title="Video call during this session"><Video /> Video</button>
       </div>
       <div className="msgs">
-        {!msgs.length && <p className="note" style={{ margin: 'auto' }}>Say hello 👋</p>}
+        {chatLoading && <p className="note" style={{ margin: 'auto' }}>Connecting to conversation…</p>}
+        {!chatLoading && !msgs.length && !err && <p className="note" style={{ margin: 'auto' }}>Say hello 👋</p>}
         {msgs.map((m, i) => m.kind === 'call' ? <div key={i} className="callnote">{m.mode === 'video' ? '🎥 Video call' : '📞 Voice call'} · {dur(m.dur)}</div>
           : m.kind === 'voice' ? <div key={i} className={'bubble ' + m.from}><VoiceNote m={m} /></div>
           : m.kind === 'file' ? <div key={i} className={'bubble file ' + m.from}>{m.mime?.startsWith('image/') && <img src={m.url} alt={m.name} />}<a href={m.url} download={m.name}>📎 {m.name}</a><small>{fsize(m.size)}</small></div>
@@ -232,33 +355,39 @@ function Chat({ name, onBack, onCall }) {
         <form className="send" onSubmit={send}>
           <button type="button" className="btn sm icon" title="Attach a file or PDF" aria-label="Attach a file" onClick={() => fileRef.current.click()}><Ico d={CLIP} /></button>
           <input ref={fileRef} type="file" hidden onChange={attach} />
-          <input className="field" value={text} onChange={(e) => setText(e.target.value)} placeholder="Type a message…" />
-          {text.trim() ? <button className="btn sm fill">Send</button> : <button type="button" className="btn sm icon" title="Record a voice note" aria-label="Record a voice note" onClick={start}><Ico d={MIC} /></button>}
+          <input className="field" value={text} onChange={(e) => setText(e.target.value)} placeholder={chatLoading ? 'Connecting…' : 'Type a message…'} disabled={chatLoading || !conversationId} />
+          {text.trim() ? <button className="btn sm fill" disabled={chatLoading || sending}>{sending ? 'Sending…' : 'Send'}</button> : <button type="button" className="btn sm icon" title="Record a voice note" aria-label="Record a voice note" onClick={start}><Ico d={MIC} /></button>}
         </form>)}
     </div>)
 }
 
 export function Messages({ chat, onCall }) {
   const { s } = useStore()
-  const { experts } = useExperts()
+  const { user: authUser } = useAuth()
   const role = s.user.role
-  const threads = s.threads[role]
+  const { sessions: mySessions, loading: sessionsLoading, error: sessionsError } = useSessions(authUser?.id, role)
   const [cur, setCur] = useState(chat || null)
-  const people = role === 'mentor' ? s.mentees.map((m) => ({ name: m.name })) : experts.map((m) => ({ name: m.name, sub: m.role }))
-  Object.keys(threads).forEach((n) => { if (!people.find((p) => p.name === n)) people.push({ name: n }) })
-  const has = (n) => (threads[n] || []).length > 0
-  people.sort((a, b) => has(b.name) - has(a.name))
-  const last = (n) => { const m = (threads[n] || []).slice(-1)[0]; return !m ? 'No messages yet' : m.kind === 'file' ? '📎 ' + m.name : m.kind === 'voice' ? '🎙 Voice note' : m.kind === 'call' ? (m.mode === 'video' ? '🎥 Video call' : '📞 Voice call') : (m.from === 'me' ? 'You: ' : '') + m.text }
+  const people = mySessions.filter(isSessionActive).map((session) => ({
+    id: role === 'mentor' ? session.learnerId : session.expertId,
+    name: session.mentor,
+    sessionId: session.id,
+  })).filter((person, index, all) => all.findIndex((candidate) => candidate.id === person.id) === index)
+  const selectedPerson = people.find((person) => person.id === cur)
   return (<>
     <Head eyebrow="Messages" title="Your" em="conversations." />
     <div className={'msgwrap' + (cur ? ' has-chat' : '')}>
-      {cur ? <Chat key={cur} name={cur} onBack={() => setCur(null)} onCall={onCall} />
+      {cur && selectedPerson ? <Chat key={selectedPerson.id} name={selectedPerson.name} otherUserId={selectedPerson.id} sessionId={selectedPerson.sessionId} onBack={() => setCur(null)} onCall={onCall} />
+        : cur && sessionsLoading ? <div className="chatpanel empty"><span>Checking active session…</span></div>
+        : cur && !selectedPerson ? <div className="chatpanel empty"><span>Chat is available only during an active session.</span></div>
         : <div className="chatpanel empty"><Ico d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" size={26} /><span>Select a conversation to start chatting</span></div>}
       <aside className="plist">
-        <small className="lbl">{role === 'mentor' ? 'Mentees' : 'Mentors'}</small>
+        <small className="lbl">{role === 'mentor' ? 'Learners in session' : 'Experts in session'}</small>
+        {sessionsLoading && <small className="hintt">Checking active sessions…</small>}
+        {sessionsError && <small className="err">{sessionsError}</small>}
+        {!sessionsLoading && !sessionsError && !people.length && <small className="hintt">Chat is available only during a scheduled active session.</small>}
         {people.map((p) => (
-          <button key={p.name} className={'crow' + (p.name === cur ? ' on' : '')} onClick={() => setCur(p.name)}>
-            <div className="avatar sm">{ini(p.name)}</div><span><b>{p.name}</b><small>{last(p.name)}</small></span></button>))}
+          <button key={p.id} className={'crow' + (p.id === cur ? ' on' : '')} onClick={() => setCur(p.id)}>
+            <div className="avatar sm">{ini(p.name)}</div><span><b>{p.name}</b><small>Active session</small></span></button>))}
       </aside>
     </div>
   </>)
@@ -330,8 +459,10 @@ const EMPTY_CARD = { number: '', expiry: '', cvv: '', name: '' }
 
 export function Wallet() {
   const { s, set } = useStore()
+  const { user: authUser } = useAuth()
   const role = s.user.role
-  const bal = s.wallet[role]
+  const { balancePaise, transactions, loading: ledgerLoading, error: ledgerError } = useWallet(authUser?.id)
+  const bal = balancePaise / 100
   const cur = s.currency || 'INR'
   const [amt, setAmt] = useState('')
   const [mi, setMi] = useState(0)
@@ -360,24 +491,38 @@ export function Wallet() {
     }
     return e
   }
-  const pay = (ev) => {
+  const pay = async (ev) => {
     ev.preventDefault(); setDone('')
     const e = validate(); setErrs(e)
     if (Object.keys(e).length) return
+    if (!authUser?.id || !supabase) { setDone('Sign in before using the demo top-up.'); return }
     const v = Number(amt); setBusy(true)
-    setTimeout(() => {
-      set((p) => ({ wallet: { ...p.wallet, [role]: p.wallet[role] + v }, tx: [{ id: Date.now(), text: `Top-up via ${label}`, amt: v }, ...p.tx], ...nt(p, 'system', `${money(v, cur)} added via ${label}.`) }))
-      setBusy(false); setAmt(''); setUpi(''); setCard(EMPTY_CARD); setDone(`${money(v, cur)} added to your wallet via ${label}.`)
-    }, 1200)
+    const { error } = await supabase.rpc('record_demo_topup', { p_amount_paise: v * 100, p_provider: kind })
+    if (error) {
+      setBusy(false)
+      setDone(error.message || 'Could not save the demo top-up.')
+      return
+    }
+    set((p) => ({ ...nt(p, 'system', `${money(v, cur)} demo credits added via ${label}.`) }))
+    setBusy(false); setAmt(''); setUpi(''); setCard(EMPTY_CARD); setDone(`${money(v, cur)} demo credits added. No real payment was processed.`)
   }
-  const withdraw = () => set((p) => ({ wallet: { ...p.wallet, [role]: 0 }, tx: [{ id: Date.now(), text: 'Withdrawal', amt: -p.wallet[role] }, ...p.tx], ...nt(p, 'system', `${money(p.wallet[role], cur)} withdrawn.`) }))
+  const withdraw = async () => {
+    setBusy(true)
+    const { data, error } = await supabase.rpc('record_demo_withdrawal')
+    setBusy(false)
+    if (error) { setDone(error.message || 'Could not record the demo withdrawal.'); return }
+    setDone(`${money(Number(data) / 100, cur)} demo credits withdrawn. No real payout was processed.`)
+    set((p) => ({ ...nt(p, 'system', 'Demo withdrawal recorded.') }))
+  }
   return (<>
     <Head eyebrow="Wallet" title="Your" em={role === 'mentor' ? 'earnings.' : 'balance.'} note={role === 'mentor' ? 'Earnings from booked sessions.' : 'Add money to book sessions.'} />
     <div className="seg" role="group" aria-label="Currency">
       {['INR', 'USD'].map((c) => <button key={c} className={cur === c ? 'on' : ''} onClick={() => set({ currency: c })}>{c === 'INR' ? '₹ INR' : '$ USD'}</button>)}
     </div>
-    <div className="balance"><small>Balance</small><div className="big">{money(bal, cur)}</div>
-      {role === 'mentor' && <div className="actions"><button className="btn sm fill" disabled={bal <= 0} onClick={withdraw}>Withdraw all</button></div>}</div>
+    <div className="balance"><small>Demo credit balance</small><div className="big">{money(bal, cur)}</div>
+      {ledgerLoading && <small className="hintt">Loading ledger…</small>}
+      {ledgerError && <p className="err">{ledgerError}</p>}
+      {role === 'mentor' && <div className="actions"><button className="btn sm fill" disabled={bal <= 0 || busy} onClick={withdraw}>Withdraw all</button></div>}</div>
 
     <div className={'walletcols' + (role === 'student' ? ' two' : '')}>
     {role === 'student' && (
@@ -421,8 +566,8 @@ export function Wallet() {
 
     <section className="txcol">
       <h3 className="sub">Transactions</h3>
-      {!s.tx.length && <p className="lead">No transactions yet.</p>}
-      {s.tx.map((t) => <div className="item" key={t.id}><span>{t.text}</span><b className={t.amt > 0 ? 'pos' : 'neg'}>{t.amt > 0 ? '+' : '−'}{money(Math.abs(t.amt), cur)}</b></div>)}
+      {!transactions.length && !ledgerLoading && <p className="lead">No transactions yet.</p>}
+      {transactions.map((transaction) => <div className="item" key={transaction.id}><span>{transaction.text}</span><b className={transaction.amount > 0 ? 'pos' : 'neg'}>{transaction.amount > 0 ? '+' : '−'}{money(Math.abs(transaction.amount), cur)}</b></div>)}
     </section>
     </div>
   </>)

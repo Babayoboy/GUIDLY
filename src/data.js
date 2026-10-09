@@ -7,7 +7,6 @@ export const EXPERTISE = ['Resume & interviews', 'Internships & placements', 'Po
 const t = Date.now()
 export const seed = {
   user: null, theme: 'dark', bellPos: null, currency: 'INR',
-  wallet: { student: 2000, mentor: 0 }, tx: [],
   sessions: [], saved: [], registered: [],
   reviews: [
     { id: 1, mentor: '__me__', from: 'Priya S.', rating: 5, text: 'Clear, practical advice on my resume. Highly recommend.', time: t - 2 * 864e5 },

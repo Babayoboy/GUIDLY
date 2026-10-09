@@ -117,7 +117,7 @@ export function Sessions({ go }) {
     ...session,
     ...(s.sessions.find((localSession) => localSession.id === session.id) || {}),
   }))
-  const activeExpertByName = new Map(sessions.filter(activeSession).map((session) => [session.mentor, session.expertId]))
+  const activeExpertByName = new Map(sessions.filter(isSessionActive).map((session) => [session.mentor, session.expertId]))
   const cur = s.currency || 'INR'
   const [rate, setRate] = useState(null)
   const [stars, setStars] = useState(0)

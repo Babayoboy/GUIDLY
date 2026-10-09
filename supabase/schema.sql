@@ -16,7 +16,7 @@ begin
     split_part(new.email, '@', 1)
   );
 
-  insert into public.profiles (id, display_name, account_type, headline)
+o public.profiles (id, display_name, account_type, headline)
   values (new.id, display_name, profile_type, 'Independent expert')
   on conflict (id) do nothing;
 

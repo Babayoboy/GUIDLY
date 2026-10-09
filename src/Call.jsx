@@ -3,6 +3,7 @@ import { supabase } from './lib/supabase'
 
 const fmt = (seconds) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
 const endedStatuses = new Set(['cancelled', 'canceled', 'refunded', 'failed', 'rejected', 'completed'])
+const STUN_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }]
 
 export default function Call({ sessionId, peerUserId, name, mode, incoming = false, onEnd }) {
   const video = mode === 'video'
@@ -10,6 +11,7 @@ export default function Call({ sessionId, peerUserId, name, mode, incoming = fal
   const [remoteStream, setRemoteStream] = useState(null)
   const [status, setStatus] = useState(incoming ? 'Incoming call' : 'Checking session…')
   const [error, setError] = useState('')
+  const [relayNotice, setRelayNotice] = useState('')
   const [seconds, setSeconds] = useState(0)
   const [micEnabled, setMicEnabled] = useState(true)
   const [cameraEnabled, setCameraEnabled] = useState(mode === 'video')
@@ -63,7 +65,8 @@ export default function Call({ sessionId, peerUserId, name, mode, incoming = fal
 
     const setup = async () => {
       if (!supabase || !sessionId || !peerUserId) throw new Error('A valid active session is required to call.')
-      const { data: { user } } = await supabase.auth.getUser()
+      const { data: { session: authSession } } = await supabase.auth.getSession()
+      const user = authSession?.user
       if (!user) throw new Error('Sign in to start a call.')
 
       const { data: session, error: sessionError } = await supabase.from('sessions')
@@ -108,8 +111,42 @@ export default function Call({ sessionId, peerUserId, name, mode, incoming = fal
       localStreamRef.current = local
       setLocalStream(local)
 
+      let iceServers = STUN_SERVERS
+      let hasTurnRelay = false
+      const iceConfigUrl = import.meta.env.VITE_ICE_CONFIG_URL || '/api/ice-config'
+      if (iceConfigUrl) {
+        try {
+          const configUrl = new URL(iceConfigUrl, window.location.origin)
+          const headers = {}
+          if (configUrl.origin === window.location.origin && authSession?.access_token) {
+            headers.Authorization = `Bearer ${authSession.access_token}`
+          }
+          const response = await fetch(configUrl, { credentials: 'omit', headers })
+          const config = await response.json()
+          if (!response.ok) throw new Error(config.error || `ICE config endpoint returned ${response.status}`)
+          if (!Array.isArray(config.iceServers) || !config.iceServers.length) throw new Error('ICE config response must include a non-empty iceServers array')
+          hasTurnRelay = config.iceServers.some((server) => {
+            const urls = Array.isArray(server.urls) ? server.urls : [server.urls]
+            return urls.some((url) => typeof url === 'string' && /^turns?:/i.test(url))
+          })
+          if (!hasTurnRelay) throw new Error('ICE config has no TURN/TURNS relay URLs')
+          iceServers = [...STUN_SERVERS, ...config.iceServers]
+          setRelayNotice('Media is routed through the TURN relay for network compatibility.')
+          if (!active) { local.getTracks().forEach((track) => track.stop()); return }
+        } catch (configError) {
+          const detail = configError.message.includes('TURN is not configured')
+            ? 'Set METERED_DOMAIN, METERED_API_KEY, SUPABASE_URL, and SUPABASE_ANON_KEY in Vercel, then redeploy.'
+            : configError.message
+          setRelayNotice(`TURN relay is unavailable (${detail}). This call may fail on restrictive networks.`)
+        }
+      } else {
+        setRelayNotice('TURN relay credentials are unavailable. Calls may fail when either network blocks direct peer connections.')
+      }
+
       peer = new RTCPeerConnection({
-        iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+        iceServers,
+        iceCandidatePoolSize: 4,
+        iceTransportPolicy: hasTurnRelay ? 'relay' : 'all',
       })
       peerRef.current = peer
       local.getTracks().forEach((track) => peer.addTrack(track, local))
@@ -122,7 +159,7 @@ export default function Call({ sessionId, peerUserId, name, mode, incoming = fal
       }
       peer.onconnectionstatechange = () => {
         if (peer.connectionState === 'connected') setStatus('Connected')
-        if (peer.connectionState === 'failed') setError('Connection failed. A TURN relay may be needed on restrictive networks.')
+        if (peer.connectionState === 'failed') setError('Connection failed. Check that your TURN credentials are configured and that the relay endpoint is reachable.')
         if (peer.connectionState === 'disconnected') setStatus('Reconnecting…')
         if (peer.connectionState === 'closed' && !endedRef.current) finish(false)
       }
@@ -258,6 +295,7 @@ export default function Call({ sessionId, peerUserId, name, mode, incoming = fal
         </div>}
         {!video && <audio ref={remoteAudioRef} autoPlay />}
         {error && <p className="err">{error}</p>}
+        {relayNotice && !error && <p className="hintt" role="status">{relayNotice}</p>}
         <div className="actions" style={{ justifyContent: 'center' }}>
           <button className={`btn sm${!micEnabled ? ' fill' : ''}`} onClick={toggleMic} disabled={!localStream}>{micEnabled ? 'Mute mic' : 'Unmute mic'}</button>
           {video && <button className={`btn sm${!cameraEnabled ? ' fill' : ''}`} onClick={toggleCamera} disabled={!localStream}>{cameraEnabled ? 'Camera off' : 'Camera on'}</button>}

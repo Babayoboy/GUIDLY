@@ -6,7 +6,14 @@ export const useStore = () => useContext(Ctx)
 export const nt = (p, type, text) =>
   (p.notifPrefs || {})[type] === false ? {} : { notifs: [{ id: Date.now() + Math.random(), type, text, read: false, time: Date.now() }, ...(p.notifs || [])].slice(0, 30) }
 export function StoreProvider({ children }) {
-  const [s, setS] = useState(() => { try { return { ...seed, ...JSON.parse(localStorage.getItem('guidly-v2')) } } catch { return seed } })
+  const [s, setS] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('guidly-v2')) || {}
+      delete saved.wallet
+      delete saved.tx
+      return { ...seed, ...saved }
+    } catch { return seed }
+  })
   useEffect(() => { try { localStorage.setItem('guidly-v2', JSON.stringify(s)) } catch {} document.documentElement.dataset.theme = s.theme }, [s])
   const set = (p) => setS((prev) => ({ ...prev, ...(typeof p === 'function' ? p(prev) : p) }))
   const toggleTheme = () => set((p) => ({ theme: p.theme === 'dark' ? 'light' : 'dark' }))

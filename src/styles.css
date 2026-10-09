@@ -80,7 +80,14 @@ footer{position:relative;z-index:2;text-align:left;padding:22px clamp(20px,7vw,1
 
 /* login + dashboard */
 .appbox{animation:rise .7s var(--ease)}
+.applayer{justify-content:center}
+.appbox{margin:0}
 @keyframes rise{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:none}}
+.appbox .inp{position:relative;display:flex;align-items:center}
+.appbox .inp .field{padding-right:64px}
+.appbox .eye{position:absolute;right:12px;border:0;background:none;color:var(--accent);font:inherit;font-size:.75rem;cursor:pointer}
+.appbox p.linkbtn{color:var(--muted);text-decoration:none;font-size:.82rem;line-height:1.5}
+.appbox p.linkbtn button{border:0;background:none;color:var(--accent);font:inherit;text-decoration:underline;text-underline-offset:3px;cursor:pointer}
 .field{width:100%;padding:10px 15px;border-radius:12px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font:inherit;font-size:.88rem;outline:none;transition:border-color .4s}
 .field::placeholder,.search input::placeholder{font-size:.82rem;color:var(--muted);opacity:.75}
 .field:focus{border-color:var(--accent)}textarea.field{min-height:90px;resize:vertical}
@@ -277,6 +284,13 @@ body.dash .backbtn{display:none}
 .lvl{display:block;height:4px;width:140px;max-width:40%;border-radius:99px;background:var(--line);overflow:hidden}
 .lvl i{display:block;height:100%;background:var(--accent);transform-origin:left;transition:transform .1s}
 .callbox.video{width:min(620px,100%)}
+.native-call{width:min(440px,100%);max-height:min(92vh,860px);overflow:auto}
+.native-call.video{width:min(760px,100%)}
+.native-call .call-avatar{width:64px;height:64px;font-size:1.6rem}
+.rtc-stage{position:relative;width:100%;aspect-ratio:16/10;min-height:220px;max-height:55vh;overflow:hidden;background:#090909;border:1px solid var(--line);border-radius:14px}
+.rtc-remote{width:100%;height:100%;object-fit:contain;background:#090909}
+.rtc-local{position:absolute;right:12px;bottom:12px;width:24%;aspect-ratio:4/3;object-fit:cover;transform:scaleX(-1);border:1px solid var(--line);border-radius:10px;background:#111}
+.rtc-wait{position:absolute;inset:0;display:grid;place-items:center;color:var(--muted);font-size:.85rem;pointer-events:none}
 .stage{position:relative;width:100%;aspect-ratio:16/10;background:var(--panel);border:1px solid var(--line);border-radius:18px;overflow:hidden;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:12px}
 .pip{position:absolute;right:10px;bottom:10px;width:30%;aspect-ratio:4/3;border-radius:12px;object-fit:cover;background:#111;transform:scaleX(-1);border:1px solid var(--line)}
 .pip.off{display:grid;place-items:center;transform:none;color:#aaa;font-size:.72rem}

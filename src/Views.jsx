@@ -1,6 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { useStore, nt } from './store'
-import { mentors, matchMentor, EXPERTISE, money, INR_RATE } from './data'
+import { matchMentor, EXPERTISE, money, INR_RATE } from './data'
+import { useExperts } from './useExperts'
+import { useSessions, isSessionActive } from './useSessions'
+import { useWallet } from './useWallet'
+import { supabase } from './lib/supabase'
+import { useAuth } from './context/AuthContext'
 
 const Video = () => (<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" /></svg>)
 const Bubble = () => (<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>)
@@ -14,34 +19,53 @@ const isPhone = (v) => /^\+?\d{10,13}$/.test(v.replace(/[\s-]/g, ''))
 
 /* ---------- Mentors: keyword search + filters ---------- */
 const uniq = (a) => [...new Set(a)].sort()
-const OPT = { field: uniq(mentors.map((m) => m.field)), college: uniq(mentors.map((m) => m.college)), degree: uniq(mentors.map((m) => m.degree)), career: uniq(mentors.flatMap((m) => m.careers)), skill: uniq(mentors.flatMap((m) => m.skills)) }
 const LABEL = { field: 'Field', college: 'College', degree: 'Degree', career: 'Career', skill: 'Skill' }
 const EMPTY = { field: '', college: '', degree: '', career: '', skill: '', rate: '' }
 const HINTS = ['IIT', 'B.Tech', 'Product Manager', 'Python', 'MBA prep']
-
 export function Mentors({ go, onCall }) {
   const { s, set } = useStore()
+  const { experts, loading, error } = useExperts()
+  const { user: authUser } = useAuth()
+  const { sessions: learnerSessions } = useSessions(authUser?.id, 'learner')
   const [q, setQ] = useState('')
   const [f, setF] = useState(EMPTY)
   const [show, setShow] = useState(false)
   const [msg, setMsg] = useState(null)
+  const [subscriptions, setSubscriptions] = useState([])
   const cur = s.currency || 'INR'
+  useEffect(() => {
+    if (!authUser?.id || !supabase) return
+    let active = true
+    supabase.from('saved_experts').select('expert_id').eq('learner_id', authUser.id).then(({ data, error: queryError }) => {
+      if (!active) return
+      if (!queryError) setSubscriptions((data || []).map((row) => row.expert_id))
+    })
+    return () => { active = false }
+  }, [authUser?.id])
+  const options = { field: uniq(experts.map((m) => m.field).filter(Boolean)), college: uniq(experts.map((m) => m.college).filter(Boolean)), degree: uniq(experts.map((m) => m.degree).filter(Boolean)), career: uniq(experts.flatMap((m) => m.careers)), skill: uniq(experts.flatMap((m) => m.skills)) }
   const n = Object.values(f).filter(Boolean).length
-  const list = mentors.filter((m) => matchMentor(m, q) && (!f.field || m.field === f.field) && (!f.college || m.college === f.college) && (!f.degree || m.degree === f.degree)
+  const list = experts.filter((m) => matchMentor(m, q) && (!f.field || m.field === f.field) && (!f.college || m.college === f.college) && (!f.degree || m.degree === f.degree)
     && (!f.career || m.careers.includes(f.career)) && (!f.skill || m.skills.includes(f.skill)) && (!f.rate || m.rate <= +f.rate))
-  const book = (m) => {
-    if (s.wallet.student < m.rate) return setMsg({ bad: true, text: `Not enough balance to book ${m.name} (${money(m.rate, cur)}). Add funds in Wallet.` })
-    set((p) => ({
-      wallet: { student: p.wallet.student - m.rate, mentor: p.wallet.mentor + m.rate },
-      sessions: [...p.sessions, { id: Date.now(), mentor: m.name, rate: m.rate, when: 'To be scheduled' }],
-      tx: [{ id: Date.now(), text: `Session with ${m.name}`, amt: -m.rate }, ...p.tx],
-      ...nt(p, 'sessions', `Session booked with ${m.name}.`),
-    }))
-    setMsg({ text: `Session booked with ${m.name}.` })
+  const activeSessionsByExpert = new Map(learnerSessions.filter(isSessionActive).map((session) => [session.expertId, session]))
+  const book = async (m) => {
+    if (!authUser?.id || !supabase) return setMsg({ bad: true, text: 'Log in to book a session.' })
+    const { error } = await supabase.rpc('book_expert_session', { p_expert_id: m.id })
+    if (error) return setMsg({ bad: true, text: error.message || 'Could not save your booking.' })
+    set((p) => ({ ...nt(p, 'sessions', `Session booked with ${m.name}.`) }))
+    setMsg({ text: `Session request for ${m.name} saved. Payment is simulated in this demo.` })
   }
-  const save = (m) => set((p) => ({ saved: p.saved.includes(m.name) ? p.saved.filter((x) => x !== m.name) : [...p.saved, m.name] }))
+  const save = async (m) => {
+    if (!authUser?.id || !supabase) return setMsg({ bad: true, text: 'Log in to subscribe to an expert.' })
+    const subscribed = subscriptions.includes(m.id)
+    const result = subscribed
+      ? await supabase.from('saved_experts').delete().eq('learner_id', authUser.id).eq('expert_id', m.id)
+      : await supabase.from('saved_experts').insert({ learner_id: authUser.id, expert_id: m.id })
+    if (result.error) return setMsg({ bad: true, text: 'Could not update your subscription. Please try again.' })
+    setSubscriptions((current) => subscribed ? current.filter((id) => id !== m.id) : [...current, m.id])
+    set((p) => ({ saved: subscribed ? p.saved.filter((x) => x !== m.name) : [...new Set([...p.saved, m.name])] }))
+  }
   return (<>
-    <Head eyebrow="Find mentor" title="Experts available" em="this week." note="Every expert is verified. Rates are per hour and shown up front." />
+    <Head eyebrow="Find mentor" title="Experts available" em="this week." note="Explore mentor profiles and find guidance for your next step." />
     <div className="search">
       <input type="search" placeholder="Search by college, degree, career or skill…" value={q} onChange={(e) => setQ(e.target.value)} />
       <button className={'btn sm' + (show || n ? ' fill' : '')} onClick={() => setShow(!show)}>Filters{n ? ` · ${n}` : ''}</button>
@@ -51,41 +75,49 @@ export function Mentors({ go, onCall }) {
       <div className="fgrid">
         {Object.keys(LABEL).map((k) => (
           <div key={k}><label className="lbl">{LABEL[k]}</label>
-            <select className="field" value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value })}><option value="">Any</option>{OPT[k].map((o) => <option key={o}>{o}</option>)}</select></div>))}
+            <select className="field" value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value })}><option value="">Any</option>{options[k].map((o) => <option key={o}>{o}</option>)}</select></div>))}
         <div><label className="lbl">Max rate / hour</label>
           <select className="field" value={f.rate} onChange={(e) => setF({ ...f, rate: e.target.value })}><option value="">Any</option>{[499, 999, 1999, 2999].map((r) => <option key={r} value={r}>Up to {money(r, cur)}</option>)}</select></div>
         <div style={{ alignSelf: 'end' }}><button className="btn sm" onClick={() => { setF(EMPTY); setQ('') }}>Clear all</button></div>
       </div>)}
     {msg && <p className={msg.bad ? 'err' : 'okline'}>{msg.text}</p>}
-    <p className="count">{list.length} expert{list.length === 1 ? '' : 's'}</p>
+    <p className="count">{loading ? 'Loading expert profiles…' : `${list.length} expert${list.length === 1 ? '' : 's'}`}</p>
+    {error && <p className="lead">{error}</p>}
     <div className="grid mgrid">{list.map((m) => (
       <div className="card mcard" key={m.id}>
         <div className="mtop">
           <div className="avatar md">{m.name.replace('Dr. ', '')[0]}</div>
           <div className="mname"><h3>{m.name}</h3><small>{m.role}</small></div>
-          <span className="rpill">★ {m.rating}</span>
+          {m.rating != null && <span className="rpill">★ {m.rating}</span>}
         </div>
         <p className="bio">{m.bio}</p>
-        <p className="meta">{m.degree} · {m.college}</p>
+        {(m.degree || m.college) && <p className="meta">{[m.degree, m.college].filter(Boolean).join(' · ')}</p>}
         <div className="tags"><span className="tag">{m.field}</span>{m.skills.slice(0, 2).map((x) => <span className="tag" key={x}>{x}</span>)}</div>
         <div className="mfoot">
           <div className="price"><b>{money(m.rate, cur)}</b><small>/ hour</small></div>
           <button className="btn sm fill" onClick={() => book(m)}>Book session</button>
         </div>
         <div className="mtools">
-          <button onClick={() => go('messages', m.name)}><Bubble />Chat</button>
-          <button onClick={() => onCall(m.name, 'voice')}><Phone />Voice</button>
-          <button onClick={() => onCall(m.name, 'video')}><Video />Video</button>
-          <button onClick={() => save(m)}><span className="star">{s.saved.includes(m.name) ? '★' : '☆'}</span>{s.saved.includes(m.name) ? 'Saved' : 'Save'}</button>
+          <button disabled={!activeSessionsByExpert.has(m.id)} title={activeSessionsByExpert.has(m.id) ? 'Chat during your active session' : 'Chat is available during an active session'} onClick={() => go('messages', m.id)}><Bubble />Chat</button>
+          <button disabled={!activeSessionsByExpert.has(m.id)} title={activeSessionsByExpert.has(m.id) ? 'Voice call during your active session' : 'Calls are available during an active session'} onClick={() => onCall({ sessionId: activeSessionsByExpert.get(m.id).id, peerUserId: m.id, name: m.name, mode: 'voice' })}><Phone />Voice</button>
+          <button disabled={!activeSessionsByExpert.has(m.id)} title={activeSessionsByExpert.has(m.id) ? 'Video call during your active session' : 'Calls are available during an active session'} onClick={() => onCall({ sessionId: activeSessionsByExpert.get(m.id).id, peerUserId: m.id, name: m.name, mode: 'video' })}><Video />Video</button>
+          <button onClick={() => save(m)}><span className="star">{subscriptions.includes(m.id) ? '★' : '☆'}</span>{subscriptions.includes(m.id) ? 'Subscribed' : 'Subscribe'}</button>
         </div>
       </div>))}
-      {!list.length && <p className="lead">No experts match. Try fewer keywords or clear the filters.</p>}</div>
+      {!loading && !error && !list.length && <p className="lead">No experts match. Try fewer keywords or clear the filters.</p>}</div>
   </>)
 }
 
 /* ---------- Sessions ---------- */
 export function Sessions({ go }) {
   const { s, set } = useStore()
+  const { user: authUser } = useAuth()
+  const { sessions: storedSessions, loading, error } = useSessions(authUser?.id, s.user.role)
+  const sessions = storedSessions.map((session) => ({
+    ...session,
+    ...(s.sessions.find((localSession) => localSession.id === session.id) || {}),
+  }))
+  const activeExpertByName = new Map(sessions.filter(isSessionActive).map((session) => [session.mentor, session.expertId]))
   const cur = s.currency || 'INR'
   const [rate, setRate] = useState(null)
   const [stars, setStars] = useState(0)
@@ -98,14 +130,17 @@ export function Sessions({ go }) {
     setRate(null)
   }
   return (<>
-    <Head eyebrow="Sessions" title="Your sessions &" em="saved mentors." />
-    <h3 className="sub">Booked sessions</h3>
-    {!s.sessions.length && <p className="lead">No sessions yet. Book one from Mentors.</p>}
-    {s.sessions.map((x) => (
+    <Head eyebrow="Sessions" title={s.user.role === 'mentor' ? 'Learner bookings &' : 'Your sessions &'} em={s.user.role === 'mentor' ? 'requests.' : 'saved mentors.'} />
+    <h3 className="sub">{s.user.role === 'mentor' ? 'Incoming sessions' : 'Booked sessions'}</h3>
+    {loading && <p className="lead">Loading your sessions…</p>}
+    {error && <p className="err">{error}</p>}
+    {!loading && !error && !sessions.length && <p className="lead">{s.user.role === 'mentor' ? 'No learner bookings yet.' : 'No sessions yet. Book one from Mentors.'}</p>}
+    {sessions.map((x) => (
       <div className="item col" key={x.id}>
         <div className="between"><b>{x.mentor}</b><span>{x.when}</span><span>{money(x.rate, cur)}</span>
           <span className="actions" style={{ margin: 0 }}>
-            <button className="btn sm" onClick={() => go('messages', x.mentor)}>Message</button>
+            <button className="btn sm" onClick={() => go('messages', s.user.role === 'mentor' ? x.learnerId : x.expertId)}>Message</button>
+            {isSessionActive(x) && <><button className="btn sm" onClick={() => onCall({ sessionId: x.id, peerUserId: s.user.role === 'mentor' ? x.learnerId : x.expertId, name: x.mentor, mode: 'voice' })}><Phone /> Voice</button><button className="btn sm" onClick={() => onCall({ sessionId: x.id, peerUserId: s.user.role === 'mentor' ? x.learnerId : x.expertId, name: x.mentor, mode: 'video' })}><Video /> Video</button></>}
             {x.rated ? <span className="ok">★ {x.rated} rated</span> : <button className="btn sm fill" onClick={() => open(x.id)}>Rate</button>}</span></div>
         {rate === x.id && (
           <div className="ratebox">
@@ -117,7 +152,7 @@ export function Sessions({ go }) {
       </div>))}
     <h3 className="sub">Saved mentors</h3>
     {!s.saved.length && <p className="lead">Nothing saved yet.</p>}
-    {s.saved.map((n) => <div className="item" key={n}><b>{n}</b><button className="btn sm" onClick={() => go('messages', n)}>Message</button></div>)}
+    {s.saved.map((n) => <div className="item" key={n}><b>{n}</b><button className="btn sm" disabled={!activeExpertByName.has(n)} onClick={() => go('messages', activeExpertByName.get(n))}>{activeExpertByName.has(n) ? 'Message' : 'No active session'}</button></div>)}
   </>)
 }
 
@@ -151,21 +186,113 @@ function VoiceNote({ m }) {
     </div>)
 }
 
-function Chat({ name, onBack, onCall }) {
+function Chat({ name, otherUserId, sessionId, onBack, onCall }) {
   const { s, set } = useStore()
+  const { user: authUser } = useAuth()
   const role = s.user.role
-  const msgs = s.threads[role][name] || []
+  const [dbMsgs, setDbMsgs] = useState([])
+  const [localMediaMsgs, setLocalMediaMsgs] = useState([])
+  const [conversationId, setConversationId] = useState(null)
   const [text, setText] = useState('')
   const [err, setErr] = useState('')
+  const [chatLoading, setChatLoading] = useState(true)
+  const [sending, setSending] = useState(false)
   const [rec, setRec] = useState(false)
   const [secs, setSecs] = useState(0)
   const [level, setLevel] = useState(0)
   const mr = useRef(null), chunks = useRef([]), samples = useRef([]), tick = useRef(null), ctxRef = useRef(null), cancel = useRef(false), t0 = useRef(0), endRef = useRef(null), fileRef = useRef(null)
-  const push = (m) => set((p) => ({ threads: { ...p.threads, [role]: { ...p.threads[role], [name]: [...(p.threads[role][name] || []), { from: 'me', ...m }] } } }))
+  const msgs = [...dbMsgs, ...localMediaMsgs].sort((a, b) => new Date(a.created_at || 0) - new Date(b.created_at || 0))
+  const appendMessage = (message) => {
+    setDbMsgs((current) => {
+      if (current.some((existing) => existing.id === message.id)) return current
+      return [...current, message].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+    })
+  }
+  const push = (m) => {
+    const localMessage = { from: 'me', ...m, created_at: new Date().toISOString() }
+    setLocalMediaMsgs((current) => [...current, localMessage])
+    set((p) => ({ threads: { ...p.threads, [role]: { ...p.threads[role], [name]: [...(p.threads[role][name] || []), localMessage] } } }))
+  }
   const stopAudio = () => { clearInterval(tick.current); ctxRef.current?.close?.(); ctxRef.current = null }
   useEffect(() => { endRef.current?.scrollIntoView({ block: 'end' }) }, [msgs.length])
   useEffect(() => () => { stopAudio(); if (mr.current?.state === 'recording') { cancel.current = true; mr.current.stop() } }, [])
-  const send = (e) => { e.preventDefault(); if (!text.trim()) return; push({ text: text.trim() }); setText('') }
+  useEffect(() => {
+    if (!authUser?.id || !otherUserId || !supabase) {
+      setChatLoading(false)
+      setErr('Could not identify both participants for this conversation.')
+      return
+    }
+    let active = true
+    let channel
+    setChatLoading(true)
+    setErr('')
+    setConversationId(null)
+    setDbMsgs([])
+    setLocalMediaMsgs([])
+    const learnerId = role === 'mentor' ? otherUserId : authUser.id
+    const expertId = role === 'mentor' ? authUser.id : otherUserId
+    const load = async () => {
+      let result = await supabase.from('conversations').select('id')
+        .eq('learner_id', learnerId).eq('expert_id', expertId).maybeSingle()
+      if (result.error) throw result.error
+      if (!result.data) {
+        result = await supabase.from('conversations').insert({ learner_id: learnerId, expert_id: expertId }).select('id').single()
+        if (result.error) throw result.error
+      }
+      const id = result.data.id
+      channel = supabase.channel(`messages-${id}`)
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${id}` }, (payload) => {
+          const message = payload.new
+          appendMessage({
+            id: message.id,
+            from: message.sender_id === authUser.id ? 'me' : 'them',
+            text: message.body,
+            created_at: message.created_at,
+          })
+        })
+      await new Promise((resolve, reject) => {
+        channel.subscribe((status, subscriptionError) => {
+          if (status === 'SUBSCRIBED') resolve()
+          else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
+            reject(subscriptionError || new Error(`Realtime subscription ${status.toLowerCase()}`))
+          }
+        })
+      })
+      if (!active) return
+      setConversationId(id)
+      const messageResult = await supabase.from('messages').select('id,sender_id,body,created_at')
+        .eq('conversation_id', id).order('created_at', { ascending: true })
+      if (messageResult.error) throw messageResult.error
+      if (!active) return
+      const history = (messageResult.data || []).map((message) => ({
+        id: message.id,
+        from: message.sender_id === authUser.id ? 'me' : 'them',
+        text: message.body,
+        created_at: message.created_at,
+      }))
+      setDbMsgs((current) => {
+        const messagesById = new Map(history.map((message) => [message.id, message]))
+        current.forEach((message) => messagesById.set(message.id, message))
+        return [...messagesById.values()].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+      })
+    }
+    load().catch((queryError) => {
+      if (active) setErr(`Could not load conversation: ${queryError.message}`)
+    }).finally(() => { if (active) setChatLoading(false) })
+    return () => { active = false; if (channel) supabase.removeChannel(channel) }
+  }, [authUser?.id, otherUserId, role])
+  const send = async (e) => {
+    e.preventDefault()
+    if (!text.trim() || !conversationId || sending) return
+    setSending(true)
+    const { data, error: sendError } = await supabase.from('messages')
+      .insert({ conversation_id: conversationId, sender_id: authUser.id, body: text.trim() })
+      .select('id,sender_id,body,created_at').single()
+    setSending(false)
+    if (sendError) { setErr(`Message not sent: ${sendError.message}`); return }
+    appendMessage({ id: data.id, from: 'me', text: data.body, created_at: data.created_at })
+    setText('')
+  }
   const attach = async (e) => {
     const f = e.target.files[0]; e.target.value = ''; if (!f) return
     setErr('')
@@ -208,11 +335,12 @@ function Chat({ name, onBack, onCall }) {
       <div className="chathead">
         <button className="btn sm icon backbtn" onClick={onBack} aria-label="Back to conversations">←</button>
         <div className="avatar sm">{ini(name)}</div><b>{name}</b><span className="grow" />
-        <button className="btn sm" onClick={() => onCall(name, 'voice')} title="Voice call"><Phone /> Voice</button>
-        <button className="btn sm" onClick={() => onCall(name, 'video')} title="Video call"><Video /> Video</button>
+        <button className="btn sm" onClick={() => onCall({ sessionId, peerUserId: otherUserId, name, mode: 'voice' })} title="Voice call during this session"><Phone /> Voice</button>
+        <button className="btn sm" onClick={() => onCall({ sessionId, peerUserId: otherUserId, name, mode: 'video' })} title="Video call during this session"><Video /> Video</button>
       </div>
       <div className="msgs">
-        {!msgs.length && <p className="note" style={{ margin: 'auto' }}>Say hello 👋</p>}
+        {chatLoading && <p className="note" style={{ margin: 'auto' }}>Connecting to conversation…</p>}
+        {!chatLoading && !msgs.length && !err && <p className="note" style={{ margin: 'auto' }}>Say hello 👋</p>}
         {msgs.map((m, i) => m.kind === 'call' ? <div key={i} className="callnote">{m.mode === 'video' ? '🎥 Video call' : '📞 Voice call'} · {dur(m.dur)}</div>
           : m.kind === 'voice' ? <div key={i} className={'bubble ' + m.from}><VoiceNote m={m} /></div>
           : m.kind === 'file' ? <div key={i} className={'bubble file ' + m.from}>{m.mime?.startsWith('image/') && <img src={m.url} alt={m.name} />}<a href={m.url} download={m.name}>📎 {m.name}</a><small>{fsize(m.size)}</small></div>
@@ -227,32 +355,39 @@ function Chat({ name, onBack, onCall }) {
         <form className="send" onSubmit={send}>
           <button type="button" className="btn sm icon" title="Attach a file or PDF" aria-label="Attach a file" onClick={() => fileRef.current.click()}><Ico d={CLIP} /></button>
           <input ref={fileRef} type="file" hidden onChange={attach} />
-          <input className="field" value={text} onChange={(e) => setText(e.target.value)} placeholder="Type a message…" />
-          {text.trim() ? <button className="btn sm fill">Send</button> : <button type="button" className="btn sm icon" title="Record a voice note" aria-label="Record a voice note" onClick={start}><Ico d={MIC} /></button>}
+          <input className="field" value={text} onChange={(e) => setText(e.target.value)} placeholder={chatLoading ? 'Connecting…' : 'Type a message…'} disabled={chatLoading || !conversationId} />
+          {text.trim() ? <button className="btn sm fill" disabled={chatLoading || sending}>{sending ? 'Sending…' : 'Send'}</button> : <button type="button" className="btn sm icon" title="Record a voice note" aria-label="Record a voice note" onClick={start}><Ico d={MIC} /></button>}
         </form>)}
     </div>)
 }
 
 export function Messages({ chat, onCall }) {
   const { s } = useStore()
+  const { user: authUser } = useAuth()
   const role = s.user.role
-  const threads = s.threads[role]
+  const { sessions: mySessions, loading: sessionsLoading, error: sessionsError } = useSessions(authUser?.id, role)
   const [cur, setCur] = useState(chat || null)
-  const people = role === 'mentor' ? s.mentees.map((m) => ({ name: m.name })) : mentors.map((m) => ({ name: m.name, sub: m.role }))
-  Object.keys(threads).forEach((n) => { if (!people.find((p) => p.name === n)) people.push({ name: n }) })
-  const has = (n) => (threads[n] || []).length > 0
-  people.sort((a, b) => has(b.name) - has(a.name))
-  const last = (n) => { const m = (threads[n] || []).slice(-1)[0]; return !m ? 'No messages yet' : m.kind === 'file' ? '📎 ' + m.name : m.kind === 'voice' ? '🎙 Voice note' : m.kind === 'call' ? (m.mode === 'video' ? '🎥 Video call' : '📞 Voice call') : (m.from === 'me' ? 'You: ' : '') + m.text }
+  const people = mySessions.filter(isSessionActive).map((session) => ({
+    id: role === 'mentor' ? session.learnerId : session.expertId,
+    name: session.mentor,
+    sessionId: session.id,
+  })).filter((person, index, all) => all.findIndex((candidate) => candidate.id === person.id) === index)
+  const selectedPerson = people.find((person) => person.id === cur)
   return (<>
     <Head eyebrow="Messages" title="Your" em="conversations." />
     <div className={'msgwrap' + (cur ? ' has-chat' : '')}>
-      {cur ? <Chat key={cur} name={cur} onBack={() => setCur(null)} onCall={onCall} />
+      {cur && selectedPerson ? <Chat key={selectedPerson.id} name={selectedPerson.name} otherUserId={selectedPerson.id} sessionId={selectedPerson.sessionId} onBack={() => setCur(null)} onCall={onCall} />
+        : cur && sessionsLoading ? <div className="chatpanel empty"><span>Checking active session…</span></div>
+        : cur && !selectedPerson ? <div className="chatpanel empty"><span>Chat is available only during an active session.</span></div>
         : <div className="chatpanel empty"><Ico d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" size={26} /><span>Select a conversation to start chatting</span></div>}
       <aside className="plist">
-        <small className="lbl">{role === 'mentor' ? 'Mentees' : 'Mentors'}</small>
+        <small className="lbl">{role === 'mentor' ? 'Learners in session' : 'Experts in session'}</small>
+        {sessionsLoading && <small className="hintt">Checking active sessions…</small>}
+        {sessionsError && <small className="err">{sessionsError}</small>}
+        {!sessionsLoading && !sessionsError && !people.length && <small className="hintt">Chat is available only during a scheduled active session.</small>}
         {people.map((p) => (
-          <button key={p.name} className={'crow' + (p.name === cur ? ' on' : '')} onClick={() => setCur(p.name)}>
-            <div className="avatar sm">{ini(p.name)}</div><span><b>{p.name}</b><small>{last(p.name)}</small></span></button>))}
+          <button key={p.id} className={'crow' + (p.id === cur ? ' on' : '')} onClick={() => setCur(p.id)}>
+            <div className="avatar sm">{ini(p.name)}</div><span><b>{p.name}</b><small>Active session</small></span></button>))}
       </aside>
     </div>
   </>)
@@ -324,8 +459,10 @@ const EMPTY_CARD = { number: '', expiry: '', cvv: '', name: '' }
 
 export function Wallet() {
   const { s, set } = useStore()
+  const { user: authUser } = useAuth()
   const role = s.user.role
-  const bal = s.wallet[role]
+  const { balancePaise, transactions, loading: ledgerLoading, error: ledgerError } = useWallet(authUser?.id)
+  const bal = balancePaise / 100
   const cur = s.currency || 'INR'
   const [amt, setAmt] = useState('')
   const [mi, setMi] = useState(0)
@@ -354,24 +491,38 @@ export function Wallet() {
     }
     return e
   }
-  const pay = (ev) => {
+  const pay = async (ev) => {
     ev.preventDefault(); setDone('')
     const e = validate(); setErrs(e)
     if (Object.keys(e).length) return
+    if (!authUser?.id || !supabase) { setDone('Sign in before using the demo top-up.'); return }
     const v = Number(amt); setBusy(true)
-    setTimeout(() => {
-      set((p) => ({ wallet: { ...p.wallet, [role]: p.wallet[role] + v }, tx: [{ id: Date.now(), text: `Top-up via ${label}`, amt: v }, ...p.tx], ...nt(p, 'system', `${money(v, cur)} added via ${label}.`) }))
-      setBusy(false); setAmt(''); setUpi(''); setCard(EMPTY_CARD); setDone(`${money(v, cur)} added to your wallet via ${label}.`)
-    }, 1200)
+    const { error } = await supabase.rpc('record_demo_topup', { p_amount_paise: v * 100, p_provider: kind })
+    if (error) {
+      setBusy(false)
+      setDone(error.message || 'Could not save the demo top-up.')
+      return
+    }
+    set((p) => ({ ...nt(p, 'system', `${money(v, cur)} demo credits added via ${label}.`) }))
+    setBusy(false); setAmt(''); setUpi(''); setCard(EMPTY_CARD); setDone(`${money(v, cur)} demo credits added. No real payment was processed.`)
   }
-  const withdraw = () => set((p) => ({ wallet: { ...p.wallet, [role]: 0 }, tx: [{ id: Date.now(), text: 'Withdrawal', amt: -p.wallet[role] }, ...p.tx], ...nt(p, 'system', `${money(p.wallet[role], cur)} withdrawn.`) }))
+  const withdraw = async () => {
+    setBusy(true)
+    const { data, error } = await supabase.rpc('record_demo_withdrawal')
+    setBusy(false)
+    if (error) { setDone(error.message || 'Could not record the demo withdrawal.'); return }
+    setDone(`${money(Number(data) / 100, cur)} demo credits withdrawn. No real payout was processed.`)
+    set((p) => ({ ...nt(p, 'system', 'Demo withdrawal recorded.') }))
+  }
   return (<>
     <Head eyebrow="Wallet" title="Your" em={role === 'mentor' ? 'earnings.' : 'balance.'} note={role === 'mentor' ? 'Earnings from booked sessions.' : 'Add money to book sessions.'} />
     <div className="seg" role="group" aria-label="Currency">
       {['INR', 'USD'].map((c) => <button key={c} className={cur === c ? 'on' : ''} onClick={() => set({ currency: c })}>{c === 'INR' ? '₹ INR' : '$ USD'}</button>)}
     </div>
-    <div className="balance"><small>Balance</small><div className="big">{money(bal, cur)}</div>
-      {role === 'mentor' && <div className="actions"><button className="btn sm fill" disabled={bal <= 0} onClick={withdraw}>Withdraw all</button></div>}</div>
+    <div className="balance"><small>Demo credit balance</small><div className="big">{money(bal, cur)}</div>
+      {ledgerLoading && <small className="hintt">Loading ledger…</small>}
+      {ledgerError && <p className="err">{ledgerError}</p>}
+      {role === 'mentor' && <div className="actions"><button className="btn sm fill" disabled={bal <= 0 || busy} onClick={withdraw}>Withdraw all</button></div>}</div>
 
     <div className={'walletcols' + (role === 'student' ? ' two' : '')}>
     {role === 'student' && (
@@ -415,8 +566,8 @@ export function Wallet() {
 
     <section className="txcol">
       <h3 className="sub">Transactions</h3>
-      {!s.tx.length && <p className="lead">No transactions yet.</p>}
-      {s.tx.map((t) => <div className="item" key={t.id}><span>{t.text}</span><b className={t.amt > 0 ? 'pos' : 'neg'}>{t.amt > 0 ? '+' : '−'}{money(Math.abs(t.amt), cur)}</b></div>)}
+      {!transactions.length && !ledgerLoading && <p className="lead">No transactions yet.</p>}
+      {transactions.map((transaction) => <div className="item" key={transaction.id}><span>{transaction.text}</span><b className={transaction.amount > 0 ? 'pos' : 'neg'}>{transaction.amount > 0 ? '+' : '−'}{money(Math.abs(transaction.amount), cur)}</b></div>)}
     </section>
     </div>
   </>)
@@ -446,12 +597,37 @@ const PREF = [['messages', 'Messages', 'When someone messages you'], ['sessions'
 
 export function Profile() {
   const { s, set } = useStore()
+  const { user: authUser } = useAuth()
   const role = s.user.role
-  const base = role === 'mentor' ? { bio: '', college: '', degree: '', field: '', experience: '', rate: 499, expertise: [] } : { bio: '', goal: '', college: '' }
+  const base = role === 'mentor' ? { bio: '', field: '', rate: 499, expertise: [] } : { bio: '', goal: '', college: '' }
   const [d, setD] = useState(() => ({ avatar: '', phone: '', verified: { email: false, phone: false }, ...base, ...s.profile[role], name: s.user.name, email: s.user.email }))
   const [errs, setErrs] = useState({})
   const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState('')
   const [custom, setCustom] = useState('')
+  useEffect(() => {
+    if (role !== 'mentor' || !authUser?.id || !supabase) return
+    let active = true
+    Promise.all([
+      supabase.from('profiles').select('display_name,headline').eq('id', authUser.id).maybeSingle(),
+      supabase.from('expert_profiles').select('bio,rate_paise,expert_categories(category_slug,categories(name))').eq('user_id', authUser.id).maybeSingle(),
+    ]).then(([{ data: account }, { data: expert }]) => {
+      if (!active) return
+      const expertise = (expert?.expert_categories || []).map((link) => {
+        const category = Array.isArray(link.categories) ? link.categories[0] : link.categories
+        return category?.name || link.category_slug
+      })
+      setD((current) => ({
+        ...current,
+        name: account?.display_name || current.name,
+        field: account?.headline || current.field,
+        bio: expert?.bio ?? current.bio,
+        rate: expert?.rate_paise != null ? Number(expert.rate_paise) / 100 : current.rate,
+        expertise: expertise.length ? expertise : current.expertise,
+      }))
+    })
+    return () => { active = false }
+  }, [role, authUser?.id])
   const ch = (k, v) => { setSaved(false); setErrs((e) => ({ ...e, [k]: '' })); setD((x) => ({ ...x, [k]: v, verified: k === 'email' || k === 'phone' ? { ...x.verified, [k]: false } : x.verified })) }
   const ver = (k) => setD((x) => ({ ...x, verified: { ...x.verified, [k]: true } }))
   const toggleX = (t) => ch('expertise', d.expertise.includes(t) ? d.expertise.filter((y) => y !== t) : [...d.expertise, t])
@@ -470,14 +646,66 @@ export function Profile() {
   }
   const emailErr = (v) => (!v.trim() ? 'Enter your email address.' : !isEmail(v.trim()) ? 'That email doesn’t look right. Try name@example.com.' : '')
   const phoneErr = (v) => (!v.trim() ? 'Enter your mobile number.' : !isPhone(v) ? 'Enter a valid mobile number (10–13 digits, optional +country code).' : '')
-  const save = () => {
+  const save = async () => {
     const e = {}
     if (!d.name.trim()) e.name = 'Enter your name.'
     const em = emailErr(d.email); if (em) e.email = em
     if (d.phone.trim() && phoneErr(d.phone)) e.phone = phoneErr(d.phone)
     if (role === 'mentor' && !(+d.rate >= 199 && +d.rate <= 2999)) e.rate = 'Rates on Guidly range from ₹199 to ₹2,999 per hour.'
-    setErrs(e); if (Object.keys(e).length) return setSaved(false)
+    setErrs(e); setSaveError(''); if (Object.keys(e).length) return setSaved(false)
     const { name, email, ...rest } = d
+    if (role === 'mentor') {
+      if (!supabase || !authUser?.id) {
+        setSaveError('Could not identify your account. Please sign in again.')
+        setSaved(false)
+        return
+      }
+      const { error: profileError } = await supabase.from('profiles').update({
+        display_name: name.trim(),
+        headline: d.field.trim() || 'Independent expert',
+      }).eq('id', authUser.id)
+      if (profileError) {
+        setSaveError('Could not save your public profile details. Please try again.')
+        setSaved(false)
+        return
+      }
+      const { error: expertError } = await supabase.from('expert_profiles').upsert({
+        user_id: authUser.id,
+        bio: d.bio.trim(),
+        rate_paise: Math.round(Number(d.rate) * 100),
+        currency: 'INR',
+        is_published: true,
+      })
+      if (expertError) {
+        setSaveError('Could not save your expert profile. Please try again.')
+        setSaved(false)
+        return
+      }
+      const { data: categories, error: categoriesError } = await supabase.from('categories').select('slug,name')
+      if (categoriesError) {
+        setSaveError('Profile saved, but categories could not be loaded. Please retry.')
+        setSaved(false)
+        return
+      }
+      const selected = new Set(d.expertise.map((item) => item.trim().toLowerCase()))
+      const categoryLinks = (categories || [])
+        .filter((category) => selected.has(category.name.trim().toLowerCase()) || selected.has(category.slug.trim().toLowerCase()))
+        .map((category) => ({ expert_id: authUser.id, category_slug: category.slug }))
+      const { error: deleteCategoriesError } = await supabase.from('expert_categories').delete().eq('expert_id', authUser.id)
+      if (deleteCategoriesError) {
+        setSaveError('Profile saved, but categories could not be updated.')
+        setSaved(false)
+        return
+      }
+      if (categoryLinks.length) {
+        const { error: insertCategoriesError } = await supabase.from('expert_categories').insert(categoryLinks)
+        if (insertCategoriesError) {
+          setSaveError('Profile saved, but categories could not be updated.')
+          setSaved(false)
+          return
+        }
+      }
+    }
     set((p) => ({ user: { ...p.user, name: name.trim(), email: email.trim() }, profile: { ...p.profile, [role]: rest }, ...nt(p, 'system', 'Profile saved.') }))
     setSaved(true)
   }
@@ -506,8 +734,7 @@ export function Profile() {
             <VerifyField label="Mobile number" type="tel" value={d.phone} verified={d.verified.phone} placeholder="+91 98765 43210" err={errs.phone} validate={phoneErr} onChange={(v) => ch('phone', v)} onVerified={() => ver('phone')} />
             <div className="fgroup"><label className="lbl">About you</label><textarea className="field" value={d.bio} placeholder="A short intro" onChange={(e) => ch('bio', e.target.value)} /></div>
             {role === 'student' ? <>{row('Career goal', 'goal', 'e.g. Software internship')}{row('College', 'college', 'Your college')}</>
-              : <>{row('College', 'college', 'Where you studied')}{row('Degree', 'degree', 'e.g. B.Tech, MBA')}{row('Field', 'field', 'e.g. Software, Design')}
-                <div className="two2">{row('Experience (years)', 'experience', '0', 'number')}{row('Rate per hour (₹199–₹2,999)', 'rate', '499', 'number')}</div></>}
+              : <>{row('Professional headline', 'field', 'e.g. Product designer, Career coach')}{row('Rate per hour (₹199–₹2,999)', 'rate', '499', 'number')}</>}
           </section>
           {role === 'mentor' && (
             <section className="pcard">
@@ -522,7 +749,7 @@ export function Profile() {
               <label className="switch" key={k}><span><b>{l}</b><small>{sub}</small></span>
                 <input type="checkbox" checked={s.notifPrefs[k] !== false} onChange={(e) => set((p) => ({ notifPrefs: { ...p.notifPrefs, [k]: e.target.checked } }))} /><i /></label>))}
           </section>
-          <div className="saverow"><button className="btn fill" style={{ marginTop: 0 }} onClick={save}>Save changes</button>{saved && <span className="okline">✓ Profile saved</span>}</div>
+          <div className="saverow"><button className="btn fill" style={{ marginTop: 0 }} onClick={save}>Save changes</button>{saved && <span className="okline">✓ Profile saved</span>}{saveError && <p className="err">{saveError}</p>}</div>
         </div>
       </div>
     </div>)
@@ -535,28 +762,19 @@ export function Stats() {
   const sample = mine.some((r) => r.mentor === '__me__')
   const count = mine.length
   const avg = count ? mine.reduce((a, r) => a + r.rating, 0) / count : 0
-  const board = [...mentors.map((m) => ({ name: m.name, rating: m.rating })), ...(count ? [{ name: 'You', rating: +avg.toFixed(2), me: true }] : [])].sort((a, b) => b.rating - a.rating)
-  const rank = board.findIndex((x) => x.me) + 1
-  const peer = mentors.reduce((a, m) => a + m.rating, 0) / mentors.length
-  const diff = avg - peer
   const ago = (t) => { const d = Math.floor((Date.now() - t) / 864e5); return d < 1 ? 'today' : d + 'd ago' }
   return (<>
-    <Head eyebrow="Stats" title="Your feedback &" em="ranking." note="Ratings students give you after sessions, compared with other mentors." />
+    <Head eyebrow="Stats" title="Your feedback &" em="ratings." note="Ratings students give you after sessions." />
     {sample && <p className="hintt">Sample reviews are shown until students rate you.</p>}
     {!count ? <p className="lead" style={{ marginTop: 20 }}>No ratings yet. They’ll appear here after students rate your sessions.</p> : (<>
       <div className="tiles">
         <div className="tile"><b>★ {avg.toFixed(1)}</b><small>Average rating</small></div>
         <div className="tile"><b>{count}</b><small>Reviews</small></div>
-        <div className="tile"><b>#{rank}<span className="of"> of {board.length}</span></b><small>Rank among mentors</small></div>
-        <div className="tile"><b>{diff >= 0 ? '+' : '−'}{Math.abs(diff).toFixed(1)}</b><small>vs mentor average ({peer.toFixed(1)})</small></div>
       </div>
       <h3 className="sub">Rating breakdown</h3>
       <div className="bars">{[5, 4, 3, 2, 1].map((n) => { const c = mine.filter((r) => r.rating === n).length; return (
         <div className="brow" key={n} style={{ gridTemplateColumns: '38px 1fr 28px' }}><span>{n} ★</span><div className="btrack"><i style={{ width: (c / count) * 100 + '%' }} /></div><span>{c}</span></div>) })}</div>
-      <h3 className="sub">You vs other mentors</h3>
-      <div className="bars">{board.map((x) => (
-        <div className={'brow' + (x.me ? ' me' : '')} key={x.name}><span>{x.name}</span><div className="btrack"><i style={{ width: Math.max(6, Math.min(100, ((x.rating - 3) / 2) * 100)) + '%' }} /></div><span>★ {x.rating.toFixed(1)}</span></div>))}
-        <small className="hintt" style={{ display: 'block', marginTop: 6 }}>Bars show ratings on a 3.0–5.0 scale.</small></div>
+      <p className="hintt">Mentor-wide comparisons are not available yet.</p>
       <h3 className="sub">Feedback from students</h3>
       {mine.map((r) => (
         <div className="item col" key={r.id}>

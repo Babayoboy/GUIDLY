@@ -80,7 +80,14 @@ footer{position:relative;z-index:2;text-align:left;padding:22px clamp(20px,7vw,1
 
 /* login + dashboard */
 .appbox{animation:rise .7s var(--ease)}
+.applayer{justify-content:center}
+.appbox{margin:0}
 @keyframes rise{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:none}}
+.appbox .inp{position:relative;display:flex;align-items:center}
+.appbox .inp .field{padding-right:64px}
+.appbox .eye{position:absolute;right:12px;border:0;background:none;color:var(--accent);font:inherit;font-size:.75rem;cursor:pointer}
+.appbox p.linkbtn{color:var(--muted);text-decoration:none;font-size:.82rem;line-height:1.5}
+.appbox p.linkbtn button{border:0;background:none;color:var(--accent);font:inherit;text-decoration:underline;text-underline-offset:3px;cursor:pointer}
 .field{width:100%;padding:10px 15px;border-radius:12px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font:inherit;font-size:.88rem;outline:none;transition:border-color .4s}
 .field::placeholder,.search input::placeholder{font-size:.82rem;color:var(--muted);opacity:.75}
 .field:focus{border-color:var(--accent)}textarea.field{min-height:90px;resize:vertical}

@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useStore, nt } from './store'
-import { mentors, matchMentor, EXPERTISE, money, INR_RATE } from './data'
+import { matchMentor, EXPERTISE, money, INR_RATE } from './data'
+import { useExperts } from './useExperts'
+import { supabase } from './lib/supabase'
+import { useAuth } from './context/AuthContext'
 
 const Video = () => (<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="23 7 16 12 23 17 23 7" /><rect x="1" y="5" width="15" height="14" rx="2" /></svg>)
 const Bubble = () => (<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>)
@@ -14,20 +17,21 @@ const isPhone = (v) => /^\+?\d{10,13}$/.test(v.replace(/[\s-]/g, ''))
 
 /* ---------- Mentors: keyword search + filters ---------- */
 const uniq = (a) => [...new Set(a)].sort()
-const OPT = { field: uniq(mentors.map((m) => m.field)), college: uniq(mentors.map((m) => m.college)), degree: uniq(mentors.map((m) => m.degree)), career: uniq(mentors.flatMap((m) => m.careers)), skill: uniq(mentors.flatMap((m) => m.skills)) }
 const LABEL = { field: 'Field', college: 'College', degree: 'Degree', career: 'Career', skill: 'Skill' }
 const EMPTY = { field: '', college: '', degree: '', career: '', skill: '', rate: '' }
 const HINTS = ['IIT', 'B.Tech', 'Product Manager', 'Python', 'MBA prep']
 
 export function Mentors({ go, onCall }) {
   const { s, set } = useStore()
+  const { experts, loading, error } = useExperts()
   const [q, setQ] = useState('')
   const [f, setF] = useState(EMPTY)
   const [show, setShow] = useState(false)
   const [msg, setMsg] = useState(null)
   const cur = s.currency || 'INR'
+  const options = { field: uniq(experts.map((m) => m.field).filter(Boolean)), college: uniq(experts.map((m) => m.college).filter(Boolean)), degree: uniq(experts.map((m) => m.degree).filter(Boolean)), career: uniq(experts.flatMap((m) => m.careers)), skill: uniq(experts.flatMap((m) => m.skills)) }
   const n = Object.values(f).filter(Boolean).length
-  const list = mentors.filter((m) => matchMentor(m, q) && (!f.field || m.field === f.field) && (!f.college || m.college === f.college) && (!f.degree || m.degree === f.degree)
+  const list = experts.filter((m) => matchMentor(m, q) && (!f.field || m.field === f.field) && (!f.college || m.college === f.college) && (!f.degree || m.degree === f.degree)
     && (!f.career || m.careers.includes(f.career)) && (!f.skill || m.skills.includes(f.skill)) && (!f.rate || m.rate <= +f.rate))
   const book = (m) => {
     if (s.wallet.student < m.rate) return setMsg({ bad: true, text: `Not enough balance to book ${m.name} (${money(m.rate, cur)}). Add funds in Wallet.` })
@@ -41,7 +45,7 @@ export function Mentors({ go, onCall }) {
   }
   const save = (m) => set((p) => ({ saved: p.saved.includes(m.name) ? p.saved.filter((x) => x !== m.name) : [...p.saved, m.name] }))
   return (<>
-    <Head eyebrow="Find mentor" title="Experts available" em="this week." note="Every expert is verified. Rates are per hour and shown up front." />
+    <Head eyebrow="Find mentor" title="Experts available" em="this week." note="Explore mentor profiles and find guidance for your next step." />
     <div className="search">
       <input type="search" placeholder="Search by college, degree, career or skill…" value={q} onChange={(e) => setQ(e.target.value)} />
       <button className={'btn sm' + (show || n ? ' fill' : '')} onClick={() => setShow(!show)}>Filters{n ? ` · ${n}` : ''}</button>
@@ -51,22 +55,23 @@ export function Mentors({ go, onCall }) {
       <div className="fgrid">
         {Object.keys(LABEL).map((k) => (
           <div key={k}><label className="lbl">{LABEL[k]}</label>
-            <select className="field" value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value })}><option value="">Any</option>{OPT[k].map((o) => <option key={o}>{o}</option>)}</select></div>))}
+            <select className="field" value={f[k]} onChange={(e) => setF({ ...f, [k]: e.target.value })}><option value="">Any</option>{options[k].map((o) => <option key={o}>{o}</option>)}</select></div>))}
         <div><label className="lbl">Max rate / hour</label>
           <select className="field" value={f.rate} onChange={(e) => setF({ ...f, rate: e.target.value })}><option value="">Any</option>{[499, 999, 1999, 2999].map((r) => <option key={r} value={r}>Up to {money(r, cur)}</option>)}</select></div>
         <div style={{ alignSelf: 'end' }}><button className="btn sm" onClick={() => { setF(EMPTY); setQ('') }}>Clear all</button></div>
       </div>)}
     {msg && <p className={msg.bad ? 'err' : 'okline'}>{msg.text}</p>}
-    <p className="count">{list.length} expert{list.length === 1 ? '' : 's'}</p>
+    <p className="count">{loading ? 'Loading expert profiles…' : `${list.length} expert${list.length === 1 ? '' : 's'}`}</p>
+    {error && <p className="lead">{error}</p>}
     <div className="grid mgrid">{list.map((m) => (
       <div className="card mcard" key={m.id}>
         <div className="mtop">
           <div className="avatar md">{m.name.replace('Dr. ', '')[0]}</div>
           <div className="mname"><h3>{m.name}</h3><small>{m.role}</small></div>
-          <span className="rpill">★ {m.rating}</span>
+          {m.rating != null && <span className="rpill">★ {m.rating}</span>}
         </div>
         <p className="bio">{m.bio}</p>
-        <p className="meta">{m.degree} · {m.college}</p>
+        {(m.degree || m.college) && <p className="meta">{[m.degree, m.college].filter(Boolean).join(' · ')}</p>}
         <div className="tags"><span className="tag">{m.field}</span>{m.skills.slice(0, 2).map((x) => <span className="tag" key={x}>{x}</span>)}</div>
         <div className="mfoot">
           <div className="price"><b>{money(m.rate, cur)}</b><small>/ hour</small></div>
@@ -79,7 +84,7 @@ export function Mentors({ go, onCall }) {
           <button onClick={() => save(m)}><span className="star">{s.saved.includes(m.name) ? '★' : '☆'}</span>{s.saved.includes(m.name) ? 'Saved' : 'Save'}</button>
         </div>
       </div>))}
-      {!list.length && <p className="lead">No experts match. Try fewer keywords or clear the filters.</p>}</div>
+      {!loading && !error && !list.length && <p className="lead">No experts match. Try fewer keywords or clear the filters.</p>}</div>
   </>)
 }
 
@@ -235,10 +240,11 @@ function Chat({ name, onBack, onCall }) {
 
 export function Messages({ chat, onCall }) {
   const { s } = useStore()
+  const { experts } = useExperts()
   const role = s.user.role
   const threads = s.threads[role]
   const [cur, setCur] = useState(chat || null)
-  const people = role === 'mentor' ? s.mentees.map((m) => ({ name: m.name })) : mentors.map((m) => ({ name: m.name, sub: m.role }))
+  const people = role === 'mentor' ? s.mentees.map((m) => ({ name: m.name })) : experts.map((m) => ({ name: m.name, sub: m.role }))
   Object.keys(threads).forEach((n) => { if (!people.find((p) => p.name === n)) people.push({ name: n }) })
   const has = (n) => (threads[n] || []).length > 0
   people.sort((a, b) => has(b.name) - has(a.name))
@@ -446,12 +452,37 @@ const PREF = [['messages', 'Messages', 'When someone messages you'], ['sessions'
 
 export function Profile() {
   const { s, set } = useStore()
+  const { user: authUser } = useAuth()
   const role = s.user.role
-  const base = role === 'mentor' ? { bio: '', college: '', degree: '', field: '', experience: '', rate: 499, expertise: [] } : { bio: '', goal: '', college: '' }
+  const base = role === 'mentor' ? { bio: '', field: '', rate: 499, expertise: [] } : { bio: '', goal: '', college: '' }
   const [d, setD] = useState(() => ({ avatar: '', phone: '', verified: { email: false, phone: false }, ...base, ...s.profile[role], name: s.user.name, email: s.user.email }))
   const [errs, setErrs] = useState({})
   const [saved, setSaved] = useState(false)
+  const [saveError, setSaveError] = useState('')
   const [custom, setCustom] = useState('')
+  useEffect(() => {
+    if (role !== 'mentor' || !authUser?.id || !supabase) return
+    let active = true
+    Promise.all([
+      supabase.from('profiles').select('display_name,headline').eq('id', authUser.id).maybeSingle(),
+      supabase.from('expert_profiles').select('bio,rate_paise,expert_categories(category_slug,categories(name))').eq('user_id', authUser.id).maybeSingle(),
+    ]).then(([{ data: account }, { data: expert }]) => {
+      if (!active) return
+      const expertise = (expert?.expert_categories || []).map((link) => {
+        const category = Array.isArray(link.categories) ? link.categories[0] : link.categories
+        return category?.name || link.category_slug
+      })
+      setD((current) => ({
+        ...current,
+        name: account?.display_name || current.name,
+        field: account?.headline || current.field,
+        bio: expert?.bio ?? current.bio,
+        rate: expert?.rate_paise != null ? Number(expert.rate_paise) / 100 : current.rate,
+        expertise: expertise.length ? expertise : current.expertise,
+      }))
+    })
+    return () => { active = false }
+  }, [role, authUser?.id])
   const ch = (k, v) => { setSaved(false); setErrs((e) => ({ ...e, [k]: '' })); setD((x) => ({ ...x, [k]: v, verified: k === 'email' || k === 'phone' ? { ...x.verified, [k]: false } : x.verified })) }
   const ver = (k) => setD((x) => ({ ...x, verified: { ...x.verified, [k]: true } }))
   const toggleX = (t) => ch('expertise', d.expertise.includes(t) ? d.expertise.filter((y) => y !== t) : [...d.expertise, t])
@@ -470,14 +501,66 @@ export function Profile() {
   }
   const emailErr = (v) => (!v.trim() ? 'Enter your email address.' : !isEmail(v.trim()) ? 'That email doesn’t look right. Try name@example.com.' : '')
   const phoneErr = (v) => (!v.trim() ? 'Enter your mobile number.' : !isPhone(v) ? 'Enter a valid mobile number (10–13 digits, optional +country code).' : '')
-  const save = () => {
+  const save = async () => {
     const e = {}
     if (!d.name.trim()) e.name = 'Enter your name.'
     const em = emailErr(d.email); if (em) e.email = em
     if (d.phone.trim() && phoneErr(d.phone)) e.phone = phoneErr(d.phone)
     if (role === 'mentor' && !(+d.rate >= 199 && +d.rate <= 2999)) e.rate = 'Rates on Guidly range from ₹199 to ₹2,999 per hour.'
-    setErrs(e); if (Object.keys(e).length) return setSaved(false)
+    setErrs(e); setSaveError(''); if (Object.keys(e).length) return setSaved(false)
     const { name, email, ...rest } = d
+    if (role === 'mentor') {
+      if (!supabase || !authUser?.id) {
+        setSaveError('Could not identify your account. Please sign in again.')
+        setSaved(false)
+        return
+      }
+      const { error: profileError } = await supabase.from('profiles').update({
+        display_name: name.trim(),
+        headline: d.field.trim() || 'Independent expert',
+      }).eq('id', authUser.id)
+      if (profileError) {
+        setSaveError('Could not save your public profile details. Please try again.')
+        setSaved(false)
+        return
+      }
+      const { error: expertError } = await supabase.from('expert_profiles').upsert({
+        user_id: authUser.id,
+        bio: d.bio.trim(),
+        rate_paise: Math.round(Number(d.rate) * 100),
+        currency: 'INR',
+        is_published: true,
+      })
+      if (expertError) {
+        setSaveError('Could not save your expert profile. Please try again.')
+        setSaved(false)
+        return
+      }
+      const { data: categories, error: categoriesError } = await supabase.from('categories').select('slug,name')
+      if (categoriesError) {
+        setSaveError('Profile saved, but categories could not be loaded. Please retry.')
+        setSaved(false)
+        return
+      }
+      const selected = new Set(d.expertise.map((item) => item.trim().toLowerCase()))
+      const categoryLinks = (categories || [])
+        .filter((category) => selected.has(category.name.trim().toLowerCase()) || selected.has(category.slug.trim().toLowerCase()))
+        .map((category) => ({ expert_id: authUser.id, category_slug: category.slug }))
+      const { error: deleteCategoriesError } = await supabase.from('expert_categories').delete().eq('expert_id', authUser.id)
+      if (deleteCategoriesError) {
+        setSaveError('Profile saved, but categories could not be updated.')
+        setSaved(false)
+        return
+      }
+      if (categoryLinks.length) {
+        const { error: insertCategoriesError } = await supabase.from('expert_categories').insert(categoryLinks)
+        if (insertCategoriesError) {
+          setSaveError('Profile saved, but categories could not be updated.')
+          setSaved(false)
+          return
+        }
+      }
+    }
     set((p) => ({ user: { ...p.user, name: name.trim(), email: email.trim() }, profile: { ...p.profile, [role]: rest }, ...nt(p, 'system', 'Profile saved.') }))
     setSaved(true)
   }
@@ -506,8 +589,7 @@ export function Profile() {
             <VerifyField label="Mobile number" type="tel" value={d.phone} verified={d.verified.phone} placeholder="+91 98765 43210" err={errs.phone} validate={phoneErr} onChange={(v) => ch('phone', v)} onVerified={() => ver('phone')} />
             <div className="fgroup"><label className="lbl">About you</label><textarea className="field" value={d.bio} placeholder="A short intro" onChange={(e) => ch('bio', e.target.value)} /></div>
             {role === 'student' ? <>{row('Career goal', 'goal', 'e.g. Software internship')}{row('College', 'college', 'Your college')}</>
-              : <>{row('College', 'college', 'Where you studied')}{row('Degree', 'degree', 'e.g. B.Tech, MBA')}{row('Field', 'field', 'e.g. Software, Design')}
-                <div className="two2">{row('Experience (years)', 'experience', '0', 'number')}{row('Rate per hour (₹199–₹2,999)', 'rate', '499', 'number')}</div></>}
+              : <>{row('Professional headline', 'field', 'e.g. Product designer, Career coach')}{row('Rate per hour (₹199–₹2,999)', 'rate', '499', 'number')}</>}
           </section>
           {role === 'mentor' && (
             <section className="pcard">
@@ -522,7 +604,7 @@ export function Profile() {
               <label className="switch" key={k}><span><b>{l}</b><small>{sub}</small></span>
                 <input type="checkbox" checked={s.notifPrefs[k] !== false} onChange={(e) => set((p) => ({ notifPrefs: { ...p.notifPrefs, [k]: e.target.checked } }))} /><i /></label>))}
           </section>
-          <div className="saverow"><button className="btn fill" style={{ marginTop: 0 }} onClick={save}>Save changes</button>{saved && <span className="okline">✓ Profile saved</span>}</div>
+          <div className="saverow"><button className="btn fill" style={{ marginTop: 0 }} onClick={save}>Save changes</button>{saved && <span className="okline">✓ Profile saved</span>}{saveError && <p className="err">{saveError}</p>}</div>
         </div>
       </div>
     </div>)
@@ -535,28 +617,19 @@ export function Stats() {
   const sample = mine.some((r) => r.mentor === '__me__')
   const count = mine.length
   const avg = count ? mine.reduce((a, r) => a + r.rating, 0) / count : 0
-  const board = [...mentors.map((m) => ({ name: m.name, rating: m.rating })), ...(count ? [{ name: 'You', rating: +avg.toFixed(2), me: true }] : [])].sort((a, b) => b.rating - a.rating)
-  const rank = board.findIndex((x) => x.me) + 1
-  const peer = mentors.reduce((a, m) => a + m.rating, 0) / mentors.length
-  const diff = avg - peer
   const ago = (t) => { const d = Math.floor((Date.now() - t) / 864e5); return d < 1 ? 'today' : d + 'd ago' }
   return (<>
-    <Head eyebrow="Stats" title="Your feedback &" em="ranking." note="Ratings students give you after sessions, compared with other mentors." />
+    <Head eyebrow="Stats" title="Your feedback &" em="ratings." note="Ratings students give you after sessions." />
     {sample && <p className="hintt">Sample reviews are shown until students rate you.</p>}
     {!count ? <p className="lead" style={{ marginTop: 20 }}>No ratings yet. They’ll appear here after students rate your sessions.</p> : (<>
       <div className="tiles">
         <div className="tile"><b>★ {avg.toFixed(1)}</b><small>Average rating</small></div>
         <div className="tile"><b>{count}</b><small>Reviews</small></div>
-        <div className="tile"><b>#{rank}<span className="of"> of {board.length}</span></b><small>Rank among mentors</small></div>
-        <div className="tile"><b>{diff >= 0 ? '+' : '−'}{Math.abs(diff).toFixed(1)}</b><small>vs mentor average ({peer.toFixed(1)})</small></div>
       </div>
       <h3 className="sub">Rating breakdown</h3>
       <div className="bars">{[5, 4, 3, 2, 1].map((n) => { const c = mine.filter((r) => r.rating === n).length; return (
         <div className="brow" key={n} style={{ gridTemplateColumns: '38px 1fr 28px' }}><span>{n} ★</span><div className="btrack"><i style={{ width: (c / count) * 100 + '%' }} /></div><span>{c}</span></div>) })}</div>
-      <h3 className="sub">You vs other mentors</h3>
-      <div className="bars">{board.map((x) => (
-        <div className={'brow' + (x.me ? ' me' : '')} key={x.name}><span>{x.name}</span><div className="btrack"><i style={{ width: Math.max(6, Math.min(100, ((x.rating - 3) / 2) * 100)) + '%' }} /></div><span>★ {x.rating.toFixed(1)}</span></div>))}
-        <small className="hintt" style={{ display: 'block', marginTop: 6 }}>Bars show ratings on a 3.0–5.0 scale.</small></div>
+      <p className="hintt">Mentor-wide comparisons are not available yet.</p>
       <h3 className="sub">Feedback from students</h3>
       {mine.map((r) => (
         <div className="item col" key={r.id}>

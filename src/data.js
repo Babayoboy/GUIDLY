@@ -1,13 +1,3 @@
-export const mentors = [
-  { id: 1, name: 'Ananya Rao', role: 'Senior Engineer, Google', field: 'Software', college: 'IIT Delhi', degree: 'B.Tech', careers: ['Software Engineer', 'Backend Developer'], skills: ['Python', 'System design', 'DSA'], rate: 999, rating: 4.9, bio: 'Backend, system design and breaking into tech.' },
-  { id: 2, name: 'Vikram Shah', role: 'Design Director', field: 'Design', college: 'NID Ahmedabad', degree: 'B.Des', careers: ['UX Designer', 'Design Lead'], skills: ['Figma', 'Portfolio review', 'UX research'], rate: 1499, rating: 4.8, bio: 'Portfolio reviews and UX career advice.' },
-  { id: 3, name: 'Meera Iyer', role: 'Founder, EduNest', field: 'Startups', college: 'IIM Bangalore', degree: 'MBA', careers: ['Founder', 'Product Manager'], skills: ['Fundraising', 'Pitching', 'Strategy'], rate: 2999, rating: 4.7, bio: 'Ideas, fundraising and first hires.' },
-  { id: 4, name: 'Rahul Verma', role: 'Data Scientist, Flipkart', field: 'Data', college: 'IIT Bombay', degree: 'M.Tech', careers: ['Data Scientist', 'ML Engineer'], skills: ['Python', 'Machine learning', 'SQL'], rate: 1299, rating: 4.8, bio: 'ML, analytics and data careers.' },
-  { id: 5, name: 'Sara Khan', role: 'Product Manager, Razorpay', field: 'Product', college: 'Delhi University', degree: 'B.Sc', careers: ['Product Manager'], skills: ['Roadmapping', 'Interview prep', 'Analytics'], rate: 799, rating: 4.6, bio: 'Product strategy and interview prep.' },
-  { id: 6, name: 'Dev Malhotra', role: 'Investment Analyst', field: 'Finance', college: 'SRCC Delhi', degree: 'B.Com', careers: ['Investment Analyst', 'Consultant'], skills: ['Excel', 'Valuation', 'MBA prep'], rate: 1999, rating: 4.7, bio: 'Finance careers and MBA applications.' },
-  { id: 7, name: 'Dr. Isha Nair', role: 'Resident Doctor, AIIMS', field: 'Medicine', college: 'AIIMS Delhi', degree: 'MBBS', careers: ['Doctor', 'Medical Researcher'], skills: ['NEET PG', 'Research', 'Clinical skills'], rate: 699, rating: 4.9, bio: 'Medical entrance, residency and research.' },
-  { id: 8, name: 'Rohan Gupta', role: 'Higher-studies Advisor', field: 'Education', college: 'DTU Delhi', degree: 'B.Tech', careers: ['Study Abroad Consultant'], skills: ['GRE', 'SOP writing', 'Scholarships'], rate: 199, rating: 4.5, bio: 'Applications, SOPs and scholarships abroad.' },
-]
 // keyword search: every word must appear in name, role, field, college, degree, careers, skills or bio
 export const matchMentor = (m, q) => {
   const blob = [m.name, m.role, m.field, m.college, m.degree, m.bio, ...m.careers, ...m.skills].join(' ').toLowerCase()

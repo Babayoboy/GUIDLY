@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useStore } from './store'
+import { useAuth } from './context/AuthContext'
 import Nav from './Nav'
 import Notifs from './Notifs'
 import Call from './Call'
@@ -10,19 +10,33 @@ const NAV = {
 }
 const VIEWS = { stats: Stats, mentors: Mentors, sessions: Sessions, messages: Messages, events: Events, resources: Resources, wallet: Wallet, profile: Profile }
 export default function Dashboard({ onLogout }) {
-  const { s, set } = useStore()
-  const items = NAV[s.user.role].map(([k, l]) => ({ k, l }))
-  const [view, setView] = useState(items[0].k)
+  const { user, signOut } = useAuth()
+  const role = user?.user_metadata?.requested_account_type === 'expert' ? 'mentor' : 'student'
+  const [loadingRole, setLoadingRole] = useState(false)
+  const [view, setView] = useState(null)
   const [chat, setChat] = useState(null)
   const [call, setCall] = useState(null)
+  useEffect(() => { setLoadingRole(false) }, [user])
+  useEffect(() => {
+    if (!loadingRole && !view && NAV[role]) {
+      setView(NAV[role][0][0])
+    }
+  }, [loadingRole, role, view])
   useEffect(() => { document.body.classList.add('dash'); return () => document.body.classList.remove('dash') }, [])
   useEffect(() => { document.body.dataset.view = view + (view === 'messages' && chat ? '-chat' : ''); return () => { delete document.body.dataset.view } }, [view, chat])
-  const W = { mentors: '1100px', events: '900px', messages: '940px', stats: '760px', profile: '960px', wallet: s.user.role === 'student' ? '980px' : '680px' }[view] || '680px'
+  const handleLogout = async () => {
+    await signOut()
+    onLogout()
+  }
+  if (loadingRole) return null
+  const items = NAV[role]?.map(([k, l]) => ({ k, l })) || []
+  const W = { mentors: '1100px', events: '900px', messages: '940px', stats: '760px', profile: '960px', wallet: role === 'student' ? '980px' : '680px' }[view] || '680px'
   const go = (v, c) => { setView(v); setChat(c || null); scrollTo({ top: 0 }) }
   const V = VIEWS[view]
+  if (!V) return null
   return (<>
-    <Nav items={items} active={view} onPick={go} onBrand={() => go(items[0].k)}>
-      <button className="pill" onClick={() => { set({ user: null }); onLogout() }}>Log out</button>
+    <Nav items={items} active={view} onPick={go} onBrand={() => go(items[0]?.k)}>
+      <button className="pill" onClick={handleLogout}>Log out</button>
       <Notifs />
     </Nav>
     <main><section className="layer in applayer" style={{ '--w': `min(${W},100%)` }}>

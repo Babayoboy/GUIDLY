@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import Nav from './Nav'
-import { mentors, matchMentor } from './data'
+import { matchMentor } from './data'
+import { useExperts } from './useExperts'
 const d = (s) => ({ '--d': s })
 const items = [['home', 'Home'], ['mentors', 'Find Mentor'], ['projects', 'Projects'], ['community', 'Community'], ['about', 'About']].map(([k, l]) => ({ k, l, href: '#' + k }))
 
@@ -8,6 +9,7 @@ export default function Landing({ onLogin }) {
   const [q, setQ] = useState('')
   const [active, setActive] = useState('home')
   const root = useRef()
+  const { experts, loading, error } = useExperts()
   useEffect(() => {
     const layers = [...root.current.querySelectorAll('.layer')]
     const io = new IntersectionObserver((es) => es.forEach((e) => e.isIntersecting && e.target.classList.add('in')), { threshold: 0.25 })
@@ -28,7 +30,7 @@ export default function Landing({ onLogin }) {
     document.documentElement.classList.add('snap')
     return () => { io.disconnect(); so.disconnect(); removeEventListener('scroll', onScroll); document.documentElement.classList.remove('snap') }
   }, [])
-  const list = mentors.filter((m) => matchMentor(m, q))
+  const list = experts.filter((m) => matchMentor(m, q))
   return (
     <div ref={root}>
       <Nav items={items} active={active}><button className="pill" onClick={onLogin}>Log in</button></Nav>
@@ -50,13 +52,15 @@ export default function Landing({ onLogin }) {
           <div className="box">
             <p className="eyebrow fx">Find Mentor</p>
             <h2 className="fx" style={d('.1s')}>Experts available <em>this week.</em></h2>
-            <p className="lead fx" style={d('.15s')}>Every expert is verified. Rates are per hour and shown up front.</p>
+            <p className="lead fx" style={d('.15s')}>Explore mentor profiles and find guidance for your next step.</p>
             <div className="search fx" style={d('.2s')}><input type="search" placeholder="Search by college, degree, career or skill…" aria-label="Search mentors" value={q} onChange={(e) => setQ(e.target.value)} /></div>
             <div className="grid">
               {list.map((m) => (
-                <div className="card" key={m.id}><div className="avatar">{m.name[0]}</div><h3>{m.name}</h3><small>{m.role}</small><span className="tag">{m.field}</span><span className="tag">₹{m.rate}/hr</span></div>
+                <div className="card" key={m.id}><div className="avatar">{m.name[0]}</div><h3>{m.name}</h3><small>{m.role}</small><span className="tag">{m.field || 'Career guidance'}</span><span className="tag">₹{m.rate}/hr</span></div>
               ))}
-              {!list.length && <p className="lead">No mentors match that search.</p>}
+              {loading && <p className="lead">Loading expert profiles…</p>}
+              {error && <p className="lead">{error}</p>}
+              {!loading && !error && !list.length && <p className="lead">No mentors match that search.</p>}
             </div>
           </div>
         </section>
